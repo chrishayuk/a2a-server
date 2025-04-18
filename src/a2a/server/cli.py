@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# a2a/server/cli.py
 """
 Command-line entrypoint to launch the A2A server with HTTP, WS, and SSE transports.
 Supports optional stdio mode for CLI-based agents, and a configurable log level.
