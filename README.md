@@ -1,140 +1,104 @@
-# chuk-a2a
+# A2A: Agent-to-Agent Communication Server
 
-**In‑memory FSM for the A2A Protocol with Pydantic v2 models**
+A lightweight, transport-agnostic server for agent-to-agent communication based on JSON-RPC.
 
-This project provides:
+## Server
 
-- **Pydantic v2 models** generated from a JSON Schema (A2A Protocol spec) with enhanced handling of `null` and union types.
-- A **schema patcher** to convert `const: null` entries to `type: "null"` for compatibility with `datamodel-code-generator`.
-- A **post-processor** to fix generated Pydantic models, ensuring nullable fields and union types are correctly annotated.
-- An **in‑memory `TaskManager`** implementing the A2A task lifecycle as a finite state machine (FSM).
-- A **CLI helper** via `Makefile` and `pdm` scripts for code generation, testing, linting, and packaging.
+The A2A server provides a flexible JSON-RPC interface for agent-to-agent communication with support for multiple transport protocols.
 
----
+### Features
 
-## Features
+- **Multiple Transport Protocols**:
+  - HTTP JSON-RPC endpoint
+  - WebSocket for bidirectional communication
+  - Server-Sent Events (SSE) for real-time updates
+  - Standard I/O mode for CLI applications
 
-- **Automated model generation**: Use `datamodel-code-generator` to produce Pydantic v2 models from JSON Schema.
-- **Null-const patching**: `fix_null_const.py` replaces any `const: null` definitions with `type: "null"`.
-- **Post-processing**: `fix_pydantic_generator.py` updates unions and nullable fields for smooth Pydantic validation.
-- **TaskManager FSM**: Create, update, cancel tasks; manage state transitions (`submitted`, `working`, `completed`, etc.);
-  store history and artifacts in-memory with thread-safe access.
-- **Test suite**: `pytest` and `pytest-asyncio` for asynchronous tests of the TaskManager.
+- **Task-Based Workflow**:
+  - Create and manage asynchronous tasks
+  - Monitor task status through state transitions
+  - Receive artifacts produced during task execution
 
-## Getting Started
+- **Simple Event System**:
+  - Real-time notifications for status changes
+  - Artifact update events
+  - Event replay for reconnecting clients
 
-### Prerequisites
-
-- Python **3.11**+ installed
-- [pdm](https://pdm.fming.dev/) (recommended) or `pip`/`venv`
-
-### Installation
+### Running the Server
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-org/chuk-a2a.git
-cd chuk-a2a
+# Basic usage (HTTP, WebSocket, and SSE on port 8000)
+a2a-server
 
-# Install dependencies (with pdm)
-pdm install
-# Or via pip in a virtualenv
+# Specify host and port
+a2a-server --host 0.0.0.0 --port 8000
+
+# Enable detailed logging
+a2a-server --log-level debug
+
+# Run in standard I/O mode (for CLI applications)
+a2a-server --stdio
+```
+
+### Server Endpoints
+
+- `POST /rpc` - HTTP JSON-RPC endpoint
+- `GET /ws` - WebSocket endpoint for bidirectional JSON-RPC
+- `GET /events` - Server-Sent Events (SSE) for real-time updates
+
+### JSON-RPC Methods
+
+| Method | Description | Parameters |
+|--------|-------------|------------|
+| `tasks/send` | Create a new task | `message`, `session_id` (optional) |
+| `tasks/get` | Get task details | `id` |
+| `tasks/cancel` | Cancel a running task | `id` |
+| `tasks/sendSubscribe` | Create a task and subscribe to updates | `message`, `session_id` (optional) |
+| `tasks/resubscribe` | Reconnect to event stream | `id` |
+
+### Task Lifecycle
+
+Tasks follow a state machine with these transitions:
+
+- `submitted` → `working` → `completed` / `failed` / `canceled`
+- `working` → `input_required` → `working` (for interactive tasks)
+
+### Implementation Details
+
+The server is built on these core components:
+
+- **TaskManager**: Handles task creation, state transitions, and artifact management
+- **EventBus**: Provides publish/subscribe functionality for real-time updates
+- **JSONRPCProtocol**: Implements the JSON-RPC 2.0 specification
+
+The architecture is fully asynchronous, using Python's asyncio and FastAPI for high performance.
+
+### Example: Server Log Output
+
+A successful task execution produces log output like this:
+
+```
+2025-04-18 19:29:38,563 INFO a2a.server.methods: Task created feb82384-544d-4ba1-8b81-0f41e97c128a, scheduling background runner
+2025-04-18 19:29:39,564 DEBUG a2a.server.methods: Updating task feb82384-544d-4ba1-8b81-0f41e97c128a to working
+2025-04-18 19:29:39,564 DEBUG a2a.server.methods: Task feb82384-544d-4ba1-8b81-0f41e97c128a initial text: 'tell me a joke'
+2025-04-18 19:29:39,564 DEBUG a2a.server.methods: Adding artifact to task feb82384-544d-4ba1-8b81-0f41e97c128a: Echo: tell me a joke
+2025-04-18 19:29:39,565 DEBUG a2a.server.methods: Updating task feb82384-544d-4ba1-8b81-0f41e97c128a to completed
+2025-04-18 19:29:39,565 INFO a2a.server.methods: Background runner completed for task feb82384-544d-4ba1-8b81-0f41e97c128a
+```
+
+## Installation
+
+```bash
+# Install from source
+git clone https://github.com/yourusername/a2a.git
+cd a2a
 pip install -e .
-pip install -r requirements.txt
 ```
 
-## Generating Pydantic Models
+## Requirements
 
-Whenever the JSON Schema (`spec/a2a_spec.json`) changes, regenerate the models:
-
-```bash
-# Using Makefile
-generate-models
-# Or with pdm script
-pdm run generate-models
-```
-
-This runs:
-
-1. **fix_null_const.py** to patch `const: null` entries → `spec/a2a_spec_fixed.json`
-2. `datamodel-code-generator` to emit initial models → `src/a2a/models.py.temp`
-3. **fix_pydantic_generator.py** to post-process unions & nullable fields → `src/a2a/models.py`
-4. Cleanup temporary files
-
-## Usage
-
-### Importing Models
-
-```python
-from a2a.models import Task, TaskState, Message, TextPart, Artifact
-```
-
-### TaskManager Example
-
-```python
-import asyncio
-from a2a.task_manager import TaskManager, InvalidTransition
-from a2a.models import Message, TextPart, TaskState
-
-async def main():
-    tm = TaskManager()
-    user_txt = TextPart(type="text", text="Process my data")
-    msg = Message(role="user", parts=[user_txt])
-
-    # Create a new task
-    task = await tm.create_task(msg)
-    print("Created task:", task.id)
-
-    # Transition to working
-    await tm.update_status(task.id, TaskState.working)
-
-    # Add an artifact
-    from a2a.models import Artifact
-    result_part = TextPart(type="text", text="Here is the result")
-    artifact = Artifact(name="result", parts=[result_part], index=0)
-    await tm.add_artifact(task.id, artifact)
-
-    # Complete the task
-    await tm.update_status(task.id, TaskState.completed)
-
-    print("Final state:", (await tm.get_task(task.id)).status.state)
-
-asyncio.run(main())
-```
-
-## Testing
-
-Run the test suite with:
-
-```bash
-# With pdm
-pdm run test
-# Or pytest directly
-pytest
-```
-
-## Linting & Formatting
-
-- **Format**: `make format` or `pdm run black src tests`
-- **Lint**: `make lint` or `pdm run flake8 src tests`
-
-## Building & Distribution
-
-Create source and wheel distributions:
-
-```bash
-make build
-# or
-pdm build
-```
-
-## Contributing
-
-1. Fork the repo and create a feature branch
-2. Write code, tests, and documentation
-3. Ensure all tests pass and linting is clean
-4. Submit a Pull Request
-
-## License
-
-This project is licensed under the [MIT License](LICENSE).
-
+- Python 3.9+
+- FastAPI
+- Uvicorn
+- Pydantic v2+
+- WebSockets

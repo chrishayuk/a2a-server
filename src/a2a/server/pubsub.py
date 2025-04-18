@@ -1,4 +1,4 @@
-# a2a/server/event_bus.py
+# a2a/server/pubsub.py
 import asyncio
 from typing import Any, List
 

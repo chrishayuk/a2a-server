@@ -3,7 +3,7 @@ import asyncio
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from a2a.models.spec import (
+from a2a.json_rpc.spec import (
     Message,
     Artifact,
     Task,
@@ -125,7 +125,7 @@ class TaskManager:
 
 if __name__ == "__main__":
     import warnings
-    from a2a.models.spec import TextPart, Role
+    from a2a.json_rpc.spec import TextPart, Role
 
     warnings.filterwarnings(
         "ignore",
@@ -136,7 +136,7 @@ if __name__ == "__main__":
     async def _demo():
         tm = TaskManager()
         user_part = TextPart(type="text", text="Tell me a joke")
-        from a2a.models.spec import Message
+        from a2a.json_rpc.spec import Message
 
         user_msg = Message(role=Role.user, parts=[user_part])
         task = await tm.create_task(user_msg)

@@ -3,7 +3,7 @@ from typing import Any, AsyncIterator, List, Dict
 
 from a2a.client.a2a_client import A2AClient
 from a2a.json_rpc.transport import JSONRPCTransport
-from a2a.models.spec import (
+from a2a.json_rpc.spec import (
     Task, TaskSendParams, TaskQueryParams, TaskIdParams,
     TaskPushNotificationConfig, TaskStatusUpdateEvent, TaskArtifactUpdateEvent,
     TaskState,

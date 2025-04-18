@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from a2a.models.spec import (
+from a2a.json_rpc.spec import (
     Message,
     Artifact,
     Task,
@@ -102,7 +102,7 @@ class TaskManager:
         return task
 
     async def cancel_task(self, task_id: str, reason: str | None = None) -> Task:
-        from a2a.models.spec import TextPart, Message, Role
+        from a2a.json_rpc.spec import TextPart, Message, Role
         cancel_part = TextPart(type="text", text=reason or "Canceled by client")
         cancel_msg = Message(role=Role.agent, parts=[cancel_part])
         return await self.update_status(task_id, TaskState.canceled, cancel_msg)

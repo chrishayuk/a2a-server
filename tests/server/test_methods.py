@@ -6,7 +6,7 @@ from a2a.json_rpc.protocol import JSONRPCProtocol
 from a2a.server.methods import register_methods
 from a2a.server.task_manager import TaskManager, TaskNotFound
 from a2a.server.pubsub import EventBus
-from a2a.models.spec import TextPart, Message, Role, TaskState
+from a2a.json_rpc.spec import TextPart, Message, Role, TaskState
 
 
 @pytest.fixture
