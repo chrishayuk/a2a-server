@@ -7,7 +7,7 @@ with support for multiple transports (HTTP, WebSocket, SSE, stdio).
 """
 
 from a2a.server.app import app, create_app
-from a2a.server.task_manager import TaskManager, TaskNotFound, InvalidTransition
+from a2a.server.tasks.task_manager import TaskManager, TaskNotFound, InvalidTransition
 from a2a.server.pubsub import EventBus
 
 __all__ = [

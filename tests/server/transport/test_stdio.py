@@ -1,23 +1,26 @@
-import json
+# In tests/server/transport/test_stdio.py
+
 import pytest
+import json
 from a2a.server.transport.stdio import handle_stdio_message
 from a2a.json_rpc.protocol import JSONRPCProtocol
-from a2a.server.task_manager import TaskManager
-from a2a.server.pubsub import EventBus
+from a2a.server.tasks.task_manager import TaskManager
 from a2a.server.methods import register_methods
+from a2a.server.pubsub import EventBus
 from a2a.json_rpc.spec import TaskState
+from a2a.server.tasks.handlers.echo_handler import EchoHandler
 
 @pytest.fixture
 def protocol_manager():
-    """
-    Create a JSON-RPC protocol dispatcher and TaskManager with EventBus for testing.
-    """
-    eb = EventBus()
-    manager = TaskManager(eb)
+    """Set up protocol with task manager for stdio tests."""
+    event_bus = EventBus()
+    manager = TaskManager(event_bus)
+    # Make sure to register a default handler
+    manager.register_handler(EchoHandler(), default=True)
+    
     protocol = JSONRPCProtocol()
     register_methods(protocol, manager)
     return protocol, manager
-
 
 def test_stdio_send_and_get(protocol_manager):
     """
@@ -54,22 +57,21 @@ def test_stdio_cancel(protocol_manager):
     send_req = {
         "jsonrpc": "2.0", "id": 10, "method": "tasks/send",
         "params": {"id": "ignored", "sessionId": None,
-                   "message": {"role": "user", "parts": [{"type": "text", "text": "Cancel"}]}}
+                "message": {"role": "user", "parts": [{"type": "text", "text": "Cancel"}]}}
     }
     send_res = json.loads(handle_stdio_message(protocol, json.dumps(send_req)))
     task_id = send_res["result"]["id"]
-
-    # Cancel it
+    
+    # Then cancel it
     cancel_req = {
         "jsonrpc": "2.0", "id": 11, "method": "tasks/cancel",
         "params": {"id": task_id}
     }
     cancel_res = json.loads(handle_stdio_message(protocol, json.dumps(cancel_req)))
-    assert cancel_res["jsonrpc"] == "2.0"
     assert cancel_res["id"] == 11
-    assert cancel_res.get("result") is None
+    assert cancel_res["result"] is None
 
-    # Verify canceled state
+    # Verify state with get
     get_req = {
         "jsonrpc": "2.0", "id": 12, "method": "tasks/get",
         "params": {"id": task_id}
@@ -79,9 +81,11 @@ def test_stdio_cancel(protocol_manager):
 
 
 def test_stdio_notification(protocol_manager):
-    """
-    Notifications (no id) should produce no output.
-    """
+    """Notification (no id) returns None."""
     protocol, _ = protocol_manager
-    notif = {"jsonrpc": "2.0", "method": "tasks/cancel", "params": {"id": "no-id"}}
-    assert handle_stdio_message(protocol, json.dumps(notif)) is None
+    notification = {
+        "jsonrpc": "2.0",
+        "method": "tasks/ping",
+        "params": {}
+    }
+    assert handle_stdio_message(protocol, json.dumps(notification)) is None

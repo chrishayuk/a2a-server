@@ -13,7 +13,7 @@ from a2a.server.app import create_app
 from a2a.server.transport.stdio import handle_stdio_message
 from a2a.json_rpc.protocol import JSONRPCProtocol
 from a2a.server.pubsub import EventBus
-from a2a.server.task_manager import TaskManager
+from a2a.server.tasks.task_manager import TaskManager
 from a2a.server.methods import register_methods
 
 
