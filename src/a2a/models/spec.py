@@ -347,6 +347,14 @@ class TaskPushNotificationConfig(BaseModel):
         PushNotificationConfig, Field(alias='pushNotificationConfig')
     ]
 
+    @property
+    def pushNotificationConfig(self) -> PushNotificationConfig:
+        """
+        Provide alias-style attribute access so tests can do:
+            conf.pushNotificationConfig.url
+        """
+        return self.push_notification_config
+
 
 class TaskNotCancelableError(BaseModel):
     model_config = ConfigDict(

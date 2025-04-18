@@ -6,7 +6,7 @@ High-level A2A client: wraps any JSON-RPC transport and provides domain-specific
 from __future__ import annotations
 from typing import Any, AsyncIterator, Type, Union
 
-# a2a
+# a2a transports
 from a2a.json_rpc.transport import JSONRPCTransport
 from a2a.client.transport.http import JSONRPCHTTPClient
 from a2a.client.transport.websocket import JSONRPCWebSocketClient
@@ -14,7 +14,7 @@ from a2a.client.transport.sse import JSONRPCSSEClient
 from a2a.json_rpc.json_rpc_errors import JSONRPCError
 from a2a.models.spec import (
     Task, TaskSendParams, TaskQueryParams, TaskIdParams,
-    TaskPushNotificationConfig, TaskStatusUpdateEvent, TaskArtifactUpdateEvent,
+    TaskPushNotificationConfig, TaskStatusUpdateEvent, TaskArtifactUpdateEvent
 )
 
 
@@ -86,12 +86,19 @@ class A2AClient:
     ) -> AsyncIterator[Union[TaskStatusUpdateEvent, TaskArtifactUpdateEvent]]:
         """
         Call tasks/sendSubscribe and stream status/artifact events.
-        Requires a transport that supports streaming (e.g. WebSocket or SSE).
+        Requires a transport that supports streaming.
         """
+        # early check for streaming support
+        try:
+            iterator = self.transport.stream()
+        except NotImplementedError as e:
+            raise NotImplementedError("Streaming requires a transport that supports stream()")
+
         # send the subscribe request
         await self.transport.call("tasks/sendSubscribe", params.model_dump(exclude_none=True))
-        # then yield incoming events
-        async for msg in self.transport.stream():
+
+        # yield incoming events
+        async for msg in iterator:
             result = msg.get("result", {})
             if "status" in result:
                 yield TaskStatusUpdateEvent.model_validate(result)
@@ -105,8 +112,13 @@ class A2AClient:
         Call tasks/resubscribe and stream remaining events.
         Requires a transport that supports streaming.
         """
+        try:
+            iterator = self.transport.stream()
+        except NotImplementedError:
+            raise NotImplementedError("Streaming requires a transport that supports stream()")
+
         await self.transport.call("tasks/resubscribe", params.model_dump(exclude_none=True))
-        async for msg in self.transport.stream():
+        async for msg in iterator:
             result = msg.get("result", {})
             if "status" in result:
                 yield TaskStatusUpdateEvent.model_validate(result)
