@@ -1,103 +1,140 @@
-# Chuk A2A Agent Runtime
+# chuk-a2a
 
-> **Status:** Early prototype – implements core data‑layer and FSM for the [Agent‑to‑Agent (A2A) Protocol](https://github.com/…) draft spec.
+**In‑memory FSM for the A2A Protocol with Pydantic v2 models**
 
-This repo is a Python reference implementation of an **A2A‑compliant remote‑agent runtime**.  It exposes JSON‑RPC 2.0 endpoints (via FastAPI – coming next), streams updates over SSE, and persists tasks / artifacts with pluggable back‑ends.
+This project provides:
 
----
-
-## ✨ Key features (today)
-
-* **Canonical Pydantic models** auto‑generated from the source JSON Schema.
-* **In‑memory Task Manager** enforcing the official state‑machine.
-* **Async‑first** – ready for `asyncio`, Celery, or other worker pools.
-* **One‑command model regeneration** (`scripts/generate_models.sh`).
-
-Roadmap items are tracked in [#issues](https://github.com/…/issues).
+- **Pydantic v2 models** generated from a JSON Schema (A2A Protocol spec) with enhanced handling of `null` and union types.
+- A **schema patcher** to convert `const: null` entries to `type: "null"` for compatibility with `datamodel-code-generator`.
+- A **post-processor** to fix generated Pydantic models, ensuring nullable fields and union types are correctly annotated.
+- An **in‑memory `TaskManager`** implementing the A2A task lifecycle as a finite state machine (FSM).
+- A **CLI helper** via `Makefile` and `pdm` scripts for code generation, testing, linting, and packaging.
 
 ---
 
-## 📂 Repo layout
+## Features
 
-```
-chuk-a2a/
-├── a2a/                    # Python package (runtime code)
-│   ├── __init__.py
-│   ├── task_manager.py     # FSM + helpers (imports generated models)
-│   └── models.py           # ← generated 🇺🇸
-│
-├── spec/
-│   └── a2a_spec.json       # Canonical JSON Schema (source of truth)
-│
-├── scripts/
-│   └── generate_models.sh  # Regenerate models.py from schema
-│
-└── README.md
-```
+- **Automated model generation**: Use `datamodel-code-generator` to produce Pydantic v2 models from JSON Schema.
+- **Null-const patching**: `fix_null_const.py` replaces any `const: null` definitions with `type: "null"`.
+- **Post-processing**: `fix_pydantic_generator.py` updates unions and nullable fields for smooth Pydantic validation.
+- **TaskManager FSM**: Create, update, cancel tasks; manage state transitions (`submitted`, `working`, `completed`, etc.);
+  store history and artifacts in-memory with thread-safe access.
+- **Test suite**: `pytest` and `pytest-asyncio` for asynchronous tests of the TaskManager.
 
----
+## Getting Started
 
-## 🚀 Quick start
+### Prerequisites
+
+- Python **3.11**+ installed
+- [pdm](https://pdm.fming.dev/) (recommended) or `pip`/`venv`
+
+### Installation
 
 ```bash
-# 1. Clone & create a virtualenv
-python -m venv .venv && source .venv/bin/activate
+# Clone the repository
+git clone https://github.com/your-org/chuk-a2a.git
+cd chuk-a2a
 
-# 2. Install deps
-pip install -r requirements.txt  # (pydantic, datamodel-code-generator, fastapi, uvicorn, …)
-
-# 3. Generate Pydantic models (first time or after schema changes)
-./scripts/generate_models.sh
-
-# 4. Smoke‑test the Task Manager
-python a2a/task_manager.py
+# Install dependencies (with pdm)
+pdm install
+# Or via pip in a virtualenv
+pip install -e .
+pip install -r requirements.txt
 ```
 
-You should see JSON for a freshly created → completed task printed to the console.
+## Generating Pydantic Models
 
----
-
-## 🔄 Regenerating **models.py**
-
-Whenever `spec/a2a_spec.json` changes, run:
+Whenever the JSON Schema (`spec/a2a_spec.json`) changes, regenerate the models:
 
 ```bash
-./scripts/generate_models.sh                # default paths
-#   or
-./scripts/generate_models.sh custom/schema.json a2a/models.py
+# Using Makefile
+generate-models
+# Or with pdm script
+pdm run generate-models
 ```
 
-The script ensures the target directory exists and always invokes the code‑generator via `python -m` to dodge `$PATH` quirks.
+This runs:
 
----
+1. **fix_null_const.py** to patch `const: null` entries → `spec/a2a_spec_fixed.json`
+2. `datamodel-code-generator` to emit initial models → `src/a2a/models.py.temp`
+3. **fix_pydantic_generator.py** to post-process unions & nullable fields → `src/a2a/models.py`
+4. Cleanup temporary files
 
-## 🛠️ Development workflow
+## Usage
 
-1. **Update schema** → regenerate models.
-2. Write or update runtime logic under `a2a/` (imports `models.py`).
-3. Add or update tests in `tests/` (pytest recommended).
-4. Run `pre‑commit run --all-files` (black, isort, flake8, mypy) before pushing.
+### Importing Models
 
----
+```python
+from a2a.models import Task, TaskState, Message, TextPart, Artifact
+```
 
-## 🗺️ Next milestones
+### TaskManager Example
 
-| M‑# | Milestone | ETA |
-|-----|-----------|-----|
-| 1 | FastAPI JSON‑RPC router & OpenAPI docs | ✅ WIP |
-| 2 | SSE streaming endpoint | 2025‑05‑01 |
-| 3 | Redis cache + Postgres persistence | 2025‑05‑08 |
-| 4 | OAuth2 / JWT auth middleware | 2025‑05‑15 |
+```python
+import asyncio
+from a2a.task_manager import TaskManager, InvalidTransition
+from a2a.models import Message, TextPart, TaskState
 
----
+async def main():
+    tm = TaskManager()
+    user_txt = TextPart(type="text", text="Process my data")
+    msg = Message(role="user", parts=[user_txt])
 
-## 🤝 Contributing
+    # Create a new task
+    task = await tm.create_task(msg)
+    print("Created task:", task.id)
 
-Issues and PRs are welcome!  Please file an issue first if you’re planning a non‑trivial change so we can discuss design.
+    # Transition to working
+    await tm.update_status(task.id, TaskState.working)
 
----
+    # Add an artifact
+    from a2a.models import Artifact
+    result_part = TextPart(type="text", text="Here is the result")
+    artifact = Artifact(name="result", parts=[result_part], index=0)
+    await tm.add_artifact(task.id, artifact)
 
-## 📄 License
+    # Complete the task
+    await tm.update_status(task.id, TaskState.completed)
 
-MIT © 2025 Chuk Corp
+    print("Final state:", (await tm.get_task(task.id)).status.state)
+
+asyncio.run(main())
+```
+
+## Testing
+
+Run the test suite with:
+
+```bash
+# With pdm
+pdm run test
+# Or pytest directly
+pytest
+```
+
+## Linting & Formatting
+
+- **Format**: `make format` or `pdm run black src tests`
+- **Lint**: `make lint` or `pdm run flake8 src tests`
+
+## Building & Distribution
+
+Create source and wheel distributions:
+
+```bash
+make build
+# or
+pdm build
+```
+
+## Contributing
+
+1. Fork the repo and create a feature branch
+2. Write code, tests, and documentation
+3. Ensure all tests pass and linting is clean
+4. Submit a Pull Request
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
 

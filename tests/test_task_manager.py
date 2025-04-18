@@ -1,6 +1,6 @@
 import pytest
 from a2a.task_manager import TaskManager, TaskState
-from a2a.models import TextPart, Message
+from a2a.models.spec import TextPart, Message
 
 @pytest.mark.asyncio
 async def test_create_and_complete():

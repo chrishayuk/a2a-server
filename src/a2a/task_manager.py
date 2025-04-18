@@ -14,7 +14,7 @@ from uuid import uuid4
 import asyncio
 import warnings
 
-from a2a.models import (
+from a2a.models.spec import (
     Artifact,
     Message,
     # Skip Part for now until it's fixed
