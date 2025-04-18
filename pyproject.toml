@@ -1,0 +1,51 @@
+[build-system]
+requires    = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name            = "chuk-a2a"
+version         = "0.1.0"
+description     = "In‑memory FSM for the A2A Protocol with Pydantic v2 models"
+readme          = "README.md"
+requires-python = ">=3.11"
+
+# runtime dependencies
+dependencies = [
+  "pydantic>=2.11.3",
+]
+
+# dev‑tools for testing & codegen
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0.0",
+  "pytest-asyncio>=0.20.0",
+  "datamodel-code-generator>=0.25.8",
+]
+
+# Tell setuptools to look in src/ for your a2a package
+[tool.setuptools.packages.find]
+where   = ["src"]
+include = ["a2a"]
+
+[tool.pdm]
+python_requires = ">=3.11"
+
+# Convenient CLI shortcuts
+[tool.pdm.scripts]
+generate-models = "bash scripts/generate_models.sh"
+test            = "pytest"
+
+# pytest settings so it finds your src/ layout automatically
+[tool.pytest.ini_options]
+# where to look for tests
+testpaths   = ["tests"]
+
+# add src/ to PYTHONPATH so `import a2a` works
+pythonpath  = ["src"]
+
+# nicer output
+addopts     = "-v"
+
+# async ini_options
+asyncio_default_fixture_loop_scope = "function"
+asyncio_mode = "strict"
