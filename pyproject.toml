@@ -11,6 +11,8 @@ requires-python = ">=3.11"
 
 # runtime dependencies
 dependencies = [
+  "asyncio>=3.4.3",
+  "httpx>=0.28.1",
   "pydantic>=2.11.3",
 ]
 

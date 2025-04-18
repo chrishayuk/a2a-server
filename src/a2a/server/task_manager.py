@@ -1,39 +1,18 @@
-from __future__ import annotations
-
-"""
-Task Manager – In‑memory FSM for the A2A Protocol (Pydantic v2 edition)
------------------------------------------------------------------------
-
-This implementation works directly with TextPart, FilePart, and DataPart 
-instead of trying to use the problematic union type Part.
-"""
-
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any, Union
-from uuid import uuid4
+# File: src/a2a/server/task_manager.py
 import asyncio
-import warnings
+from datetime import datetime, timezone
+from uuid import uuid4
 
 from a2a.models.spec import (
-    Artifact,
     Message,
-    # Skip Part for now until it's fixed
-    # Part,
-    Role,
+    Artifact,
     Task,
-    TaskState,
     TaskStatus,
-    TextPart,
-    # Add other part types if needed
-    # DataPart, 
-    # FilePart,
+    TaskState,
+    TaskStatusUpdateEvent,
+    TaskArtifactUpdateEvent,
 )
-
-__all__ = ["TaskManager", "TaskNotFound", "InvalidTransition"]
-
-# ---------------------------------------------------------------------------
-# Exceptions
-# ---------------------------------------------------------------------------
+from a2a.server.pubsub import EventBus
 
 
 class TaskNotFound(Exception):
@@ -44,15 +23,13 @@ class InvalidTransition(Exception):
     """Raised on an illegal state transition according to the FSM."""
 
 
-# ---------------------------------------------------------------------------
-# Task Manager
-# ---------------------------------------------------------------------------
-
-
 class TaskManager:
-    """Minimal in‑memory implementation of the A2A task lifecycle."""
+    """
+    Minimal in‑memory implementation of the A2A task lifecycle,
+    with optional event publishing via EventBus.
+    """
 
-    _valid_transitions: Dict[TaskState, List[TaskState]] = {
+    _valid_transitions: dict[TaskState, list[TaskState]] = {
         TaskState.submitted: [
             TaskState.working,
             TaskState.completed,
@@ -68,15 +45,12 @@ class TaskManager:
         TaskState.input_required: [TaskState.working, TaskState.canceled],
     }
 
-    def __init__(self) -> None:
-        self._tasks: Dict[str, Task] = {}
+    def __init__(self, event_bus: EventBus | None = None) -> None:
+        self._tasks: dict[str, Task] = {}
         self._lock = asyncio.Lock()
+        self._event_bus = event_bus
 
-    # ------------------------------------------------------------------
-    # CRUD helpers
-    # ------------------------------------------------------------------
-
-    async def create_task(self, user_msg: Message, session_id: Optional[str] = None) -> Task:
+    async def create_task(self, user_msg: Message, session_id: str | None = None) -> Task:
         async with self._lock:
             task_id = str(uuid4())
             sess_id = session_id or str(uuid4())
@@ -87,7 +61,12 @@ class TaskManager:
                 history=[user_msg],
             )
             self._tasks[task_id] = task
-            return task
+
+        if self._event_bus:
+            await self._event_bus.publish(
+                TaskStatusUpdateEvent(id=task.id, status=task.status, final=False)
+            )
+        return task
 
     async def get_task(self, task_id: str) -> Task:
         task = self._tasks.get(task_id)
@@ -99,7 +78,7 @@ class TaskManager:
         self,
         task_id: str,
         new_state: TaskState,
-        message: Optional[Message] = None,
+        message: Message | None = None,
     ) -> Task:
         async with self._lock:
             task = await self.get_task(task_id)
@@ -108,49 +87,58 @@ class TaskManager:
 
             task.status = TaskStatus(
                 state=new_state,
-                message=message,
                 timestamp=datetime.now(timezone.utc),
             )
             if message is not None:
+                # record message in history but not in TaskStatus
                 task.history = (task.history or []) + [message]
-            return task
+
+        if self._event_bus:
+            final = new_state in (
+                TaskState.completed,
+                TaskState.canceled,
+                TaskState.failed,
+            )
+            await self._event_bus.publish(
+                TaskStatusUpdateEvent(id=task.id, status=task.status, final=final)
+            )
+        return task
 
     async def add_artifact(self, task_id: str, artifact: Artifact) -> Task:
         async with self._lock:
             task = await self.get_task(task_id)
             task.artifacts = (task.artifacts or []) + [artifact]
-            return task
+
+        if self._event_bus:
+            await self._event_bus.publish(
+                TaskArtifactUpdateEvent(id=task.id, artifact=artifact)
+            )
+        return task
 
     async def cancel_task(self, task_id: str, reason: str | None = None) -> Task:
-        cancel_part = TextPart(type="text", text=reason or "Canceled by client")
-        cancel_msg = Message(role=Role.agent, parts=[cancel_part])
-        return await self.update_status(task_id, TaskState.canceled, cancel_msg)
+        # Cancel without embedding a message into TaskStatus
+        return await self.update_status(task_id, TaskState.canceled)
 
-    # ------------------------------------------------------------------
-    # Convenience
-    # ------------------------------------------------------------------
-
-    def tasks_by_state(self, state: TaskState) -> List[Task]:
+    def tasks_by_state(self, state: TaskState) -> list[Task]:
         return [t for t in self._tasks.values() if t.status.state == state]
 
 
-# ---------------------------------------------------------------------------
-# Smoke‑test
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
-    # Silence Pydantic serializer warnings in the demo
+    import warnings
+    from a2a.models.spec import TextPart, Role
+
     warnings.filterwarnings(
         "ignore",
         message="Pydantic serializer warnings:",
-        category=UserWarning
+        category=UserWarning,
     )
 
-    async def _demo() -> None:
+    async def _demo():
         tm = TaskManager()
         user_part = TextPart(type="text", text="Tell me a joke")
-        user_msg = Message(role=Role.user, parts=[user_part])
+        from a2a.models.spec import Message
 
+        user_msg = Message(role=Role.user, parts=[user_part])
         task = await tm.create_task(user_msg)
         print("Created:\n", task.model_dump_json(indent=2))
 
