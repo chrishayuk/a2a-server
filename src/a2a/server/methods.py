@@ -1,6 +1,7 @@
 # File: src/a2a/server/methods.py
 import asyncio
 import logging
+import weakref
 
 from a2a.json_rpc.spec import (
     TaskSendParams,
@@ -20,6 +21,33 @@ from a2a.server.task_manager import TaskManager
 
 # Configure module logger
 logger = logging.getLogger(__name__)
+
+# Keep track of active background tasks
+_background_tasks = set()
+
+def _register_task(task):
+    """Register a background task for cleanup."""
+    _background_tasks.add(task)
+    
+    # Set up removal when the task is done
+    def _clean_task(t):
+        _background_tasks.discard(t)
+    task.add_done_callback(_clean_task)
+    
+    return task
+
+async def cancel_pending_tasks():
+    """Cancel all pending background tasks and wait for them to complete."""
+    tasks = list(_background_tasks)
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    
+    if tasks:
+        # Wait for all tasks to complete cancellation
+        await asyncio.gather(*tasks, return_exceptions=True)
+    
+    _background_tasks.clear()
 
 
 def register_methods(
@@ -63,6 +91,10 @@ def register_methods(
             logger.debug(f"Updating task {task_id} to completed")
             await manager.update_status(task_id, TaskState.completed)
             logger.info(f"Background runner completed for task {task_id}")
+        except asyncio.CancelledError:
+            logger.info(f"Background runner for task {task_id} was cancelled")
+            # Re-raise so asyncio sees this task was properly cancelled
+            raise
         except Exception as e:
             logger.exception(f"Error in background runner for task {task_id}: {e}")
 
@@ -72,8 +104,9 @@ def register_methods(
         p = TaskSendParams.model_validate(params)
         task = await manager.create_task(p.message, session_id=p.session_id)
         logger.info(f"Task created {task.id}, scheduling background runner")
-        # schedule background processing
-        asyncio.create_task(_background_runner(task.id, p.message))
+        # schedule background processing and register for cleanup
+        background_task = asyncio.create_task(_background_runner(task.id, p.message))
+        _register_task(background_task)
         # Return using alias keys
         result = Task.model_validate(task.model_dump()).model_dump(exclude_none=True, by_alias=True)
         logger.debug(f"tasks/send returning: {result}")
@@ -102,7 +135,8 @@ def register_methods(
         p = TaskSendParams.model_validate(params)
         task = await manager.create_task(p.message, session_id=p.session_id)
         logger.info(f"Task created {task.id} (sendSubscribe), scheduling background runner")
-        asyncio.create_task(_background_runner(task.id, p.message))
+        background_task = asyncio.create_task(_background_runner(task.id, p.message))
+        _register_task(background_task)
         result = Task.model_validate(task.model_dump()).model_dump(exclude_none=True, by_alias=True)
         logger.debug(f"tasks/sendSubscribe returning: {result}")
         return result
@@ -112,3 +146,6 @@ def register_methods(
         # no-op: the SSE sidecar handles resubscribe by replaying events
         logger.info(f"Received RPC method {method} (resubscribe) with params: {params}")
         return None
+        
+    # Add a cleanup method to the protocol
+    protocol.cancel_pending_tasks = cancel_pending_tasks

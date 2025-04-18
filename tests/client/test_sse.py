@@ -22,8 +22,10 @@ async def test_sse_call_and_notify():
     client = JSONRPCSSEClient("http://test", "http://test/stream")
 
     class FakeResp:
-        def __init__(self, data):
+        def __init__(self, data, status_code=200):
             self._data = data
+            self.status_code = status_code
+            self.content = True  # Add content attribute
         def raise_for_status(self):
             pass
         def json(self):
@@ -51,12 +53,31 @@ async def test_sse_call_and_notify():
 async def test_sse_stream():
     data1 = json.dumps({"jsonrpc": "2.0", "result": {"val": 1}})
     data2 = json.dumps({"jsonrpc": "2.0", "result": {"val": 2}})
-    fake_context = FakeContext([
+    
+    class EnhancedFakeContext:
+        def __init__(self, lines):
+            self.lines = lines
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            pass
+
+        async def aiter_lines(self):
+            for line in self.lines:
+                yield line
+                
+        def raise_for_status(self):
+            pass
+    
+    fake_context = EnhancedFakeContext([
         "\n",
         ": comment",
         f"data: {data1}\n",
         f"data:{data2}\n",
     ])
+    
     client = JSONRPCSSEClient("http://test", "http://test/stream")
     client._client.stream = lambda *args, **kwargs: fake_context
 
