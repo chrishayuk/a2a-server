@@ -1,4 +1,4 @@
-# a2a/server/app.py
+# File: a2a/server/app.py
 from fastapi import FastAPI
 import logging
 from typing import Optional, List
@@ -54,10 +54,22 @@ def create_app(
         title="A2A Server",
         description="Agent-to-Agent JSON‑RPC over HTTP, WS, SSE",
     )
+    # Register transports
     setup_http(app, proto)
     setup_ws(app, proto, eb)
     setup_sse(app, eb)
     logger.debug("Transports configured (HTTP, WS, SSE)")
+
+    # Health check endpoint on each sub-app (both with and without trailing slash)
+    @app.get("/", include_in_schema=False)
+    async def _health():
+        """Return the RPC and SSE endpoints."""
+        return {"rpc": "/rpc", "events": "/events"}
+
+    @app.get("", include_in_schema=False)
+    async def _health_noslash():
+        """Alias health without trailing slash."""
+        return {"rpc": "/rpc", "events": "/events"}
 
     return app
 

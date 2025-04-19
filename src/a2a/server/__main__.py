@@ -3,6 +3,10 @@
 """
 CLI entrypoint for a2a-server: supports HTTP/WS/SSE or stdio mode,
 optional YAML config, auto‑picks up agent.yaml if present.
+
+Supports mounting each configured handler under its own URL prefix,
+with the YAML `default` handler served at the root path `/` if specified,
+and per-handler health checks at each prefix.
 """
 import sys
 import os
@@ -19,6 +23,7 @@ from a2a.server.pubsub import EventBus
 from a2a.server.tasks.task_manager import TaskManager
 from a2a.server.methods import register_methods
 from a2a.server.tasks.discovery import register_discovered_handlers
+from a2a.server.run import load_config, setup_handlers
 
 def main():
     parser = argparse.ArgumentParser(prog="a2a-server")
@@ -35,141 +40,137 @@ def main():
     parser.add_argument("-c", "--config", help="YAML config path")
     args = parser.parse_args()
 
-    # Auto‑load agent.yaml if no explicit config
     if not args.config and os.path.exists("agent.yaml"):
         args.config = "agent.yaml"
 
-    if args.config:
-        # Delegate to run.py's logic
-        from a2a.server.run import load_config, setup_handlers
-        cfg = load_config(args.config)
+    cfg = load_config(args.config) if args.config else {}
+    if args.log_level:
+        cfg.setdefault("logging", {}).setdefault("level", args.log_level)
+    if args.log_file:
+        cfg.setdefault("logging", {}).setdefault("file", args.log_file)
+    if args.host:
+        cfg.setdefault("server", {}).setdefault("host", args.host)
+    if args.port:
+        cfg.setdefault("server", {}).setdefault("port", args.port)
 
-        # If user explicitly passed --config, allow CLI flags to override YAML
-        if parser.get_default("config") != args.config:
-            if args.log_level: cfg["logging"]["level"] = args.log_level
-            if args.log_file:  cfg["logging"]["file"]  = args.log_file
-            if args.host:      cfg["server"]["host"]   = args.host
-            if args.port:      cfg["server"]["port"]   = args.port
+    quiet = cfg.get("logging", {}).get("quiet_modules", {})
+    if args.quiet_modules:
+        for m in args.quiet_modules:
+            try:
+                mod, lvl = m.split(":",1)
+                quiet[mod] = lvl
+            except ValueError:
+                print(f"Ignoring invalid quiet-module '{m}'")
+        cfg.setdefault("logging", {})["quiet_modules"] = quiet
 
-        # Merge quiet-modules
-        quiet = cfg["logging"].get("quiet_modules", {})
-        if args.quiet_modules:
-            for m in args.quiet_modules:
-                try:
-                    mod, lvl = m.split(":",1)
-                    quiet[mod] = lvl
-                except ValueError:
-                    print(f"Ignoring invalid quiet-module '{m}'")
-            cfg["logging"]["quiet_modules"] = quiet
+    L = cfg.get("logging", {})
+    configure_logging(
+        level_name=L.get("level", args.log_level),
+        file_path=L.get("file"),
+        verbose_modules=L.get("verbose_modules", args.verbose_modules or []),
+        quiet_modules=L.get("quiet_modules", {})
+    )
 
-        # Configure logging
-        L = cfg["logging"]
-        configure_logging(
-            level_name=L["level"],
-            file_path=L.get("file"),
-            verbose_modules=L.get("verbose_modules", []),
-            quiet_modules=L.get("quiet_modules", {})
+    if args.list_handlers:
+        from a2a.server.tasks.discovery import discover_all_handlers
+        found = discover_all_handlers(args.handler_packages)
+        print(f"Discovered {len(found)} handlers:")
+        for cls in found:
+            try:
+                inst = cls()
+                print(f"  - {inst.name}: {cls.__name__}")
+            except Exception:
+                print(f"  - {cls.__name__} [error instantiating]")
+        return
+
+    handlers_config = cfg.get("handlers", {})
+    custom_handlers, default_handler = setup_handlers(handlers_config)
+    use_disc = handlers_config.get("use_discovery", True) and not args.no_discovery
+
+    if args.stdio:
+        eb = EventBus()
+        mgr = TaskManager(eb)
+        proto = JSONRPCProtocol()
+
+        for h in custom_handlers:
+            mgr.register_handler(h, default=False)
+        if use_disc:
+            register_discovered_handlers(mgr, packages=args.handler_packages)
+        register_methods(proto, mgr)
+
+        logging.info("Starting stdio mode")
+        for line in sys.stdin:
+            out = handle_stdio_message(proto, line)
+            if out:
+                print(out, flush=True)
+        return
+
+    root_app = FastAPI(title="A2A Multi-Agent Server")
+
+    @root_app.get("/", include_in_schema=False)
+    async def health_root():
+        return {
+            "default_handler": default_handler.name if default_handler else None,
+            "handlers": [h.name for h in custom_handlers]
+        }
+
+    # Register each handler under /<name> with health and RPC/SSE
+    for handler in custom_handlers:
+        prefix = f"/{handler.name}"
+        sub_app = create_app(
+            handlers=[handler], use_discovery=False, handler_packages=None
         )
-
-        # List handlers and exit if requested
-        if args.list_handlers:
-            handlers = register_discovered_handlers  # to force import
-            from a2a.server.tasks.discovery import discover_all_handlers
-            found = discover_all_handlers(args.handler_packages)
-            print(f"Discovered {len(found)} handlers:")
-            for cls in found:
-                try:
-                    inst = cls()
-                    print(f"  - {inst.name}: {cls.__name__}")
-                except Exception:
-                    print(f"  - {cls.__name__} [error instantiating]")
-            return
-
-        # Build custom handlers from YAML
-        custom, _ = setup_handlers(cfg["handlers"])
-        use_disc = cfg["handlers"].get("use_discovery", True) and not args.no_discovery
-
-        if args.stdio:
-            # stdio JSON-RPC mode
-            eb = EventBus()
-            mgr = TaskManager(eb)
-            proto = JSONRPCProtocol()
-
-            for h in custom:
-                mgr.register_handler(h, default=False)
-            if use_disc:
-                register_discovered_handlers(mgr, packages=args.handler_packages)
-            register_methods(proto, mgr)
-
-            logging.info("Starting stdio mode")
-            for line in sys.stdin:
-                out = handle_stdio_message(proto, line)
-                if out:
-                    print(out, flush=True)
-
-        else:
-            # HTTP / WS / SSE mode
-            app = create_app(
-                handlers=custom or None,
-                use_discovery=use_disc,
-                handler_packages=args.handler_packages
-            )
-            h, p = cfg["server"]["host"], cfg["server"]["port"]
-            logging.info(f"Starting HTTP server on {h}:{p}")
-            uvicorn.run(app, host=h, port=p, log_level=L["level"])
-
-    else:
-        # No YAML config: purely CLI‑driven
-        quiet = {}
-        if args.quiet_modules:
-            for m in args.quiet_modules:
-                try:
-                    mod, lvl = m.split(":",1)
-                    quiet[mod] = lvl
-                except ValueError:
-                    pass
-
-        configure_logging(
-            level_name=args.log_level,
-            file_path=args.log_file,
-            verbose_modules=args.verbose_modules or [],
-            quiet_modules=quiet
+        # Health routes
+        sub_app.add_api_route(
+            path="",
+            endpoint=lambda name=handler.name, path=prefix: {
+                "handler": name,
+                "rpc": path + "/rpc",
+                "events": path + "/events",
+            },
+            methods=["GET"], include_in_schema=False
         )
+        sub_app.add_api_route(
+            path="/",
+            endpoint=lambda name=handler.name, path=prefix: {
+                "handler": name,
+                "rpc": path + "/rpc",
+                "events": path + "/events",
+            },
+            methods=["GET"], include_in_schema=False
+        )
+        root_app.mount(prefix, sub_app)
+        logging.info(f"Mounted handler '{handler.name}' at '{prefix}'")
 
-        if args.list_handlers:
-            from a2a.server.tasks.discovery import discover_all_handlers
-            found = discover_all_handlers(args.handler_packages)
-            print(f"Discovered {len(found)} handlers:")
-            for cls in found:
-                try:
-                    inst = cls()
-                    print(f"  - {inst.name}: {cls.__name__}")
-                except Exception:
-                    print(f"  - {cls.__name__} [error]")
-            return
+    if default_handler:
+        default_app = create_app(
+            handlers=[default_handler], use_discovery=False, handler_packages=None
+        )
+        default_app.add_api_route(
+            path="",
+            endpoint=lambda name=default_handler.name: {
+                "handler": name,
+                "rpc": "/rpc",
+                "events": "/events",
+            },
+            methods=["GET"], include_in_schema=False
+        )
+        default_app.add_api_route(
+            path="/",
+            endpoint=lambda name=default_handler.name: {
+                "handler": name,
+                "rpc": "/rpc",
+                "events": "/events",
+            },
+            methods=["GET"], include_in_schema=False
+        )
+        root_app.mount("/", default_app)
+        logging.info(f"Mounted default handler '{default_handler.name}' at '/' ")
 
-        if args.stdio:
-            eb = EventBus()
-            mgr = TaskManager(eb)
-            proto = JSONRPCProtocol()
-            if not args.no_discovery:
-                register_discovered_handlers(mgr, packages=args.handler_packages)
-            register_methods(proto, mgr)
-
-            logging.info("Starting stdio mode")
-            for line in sys.stdin:
-                out = handle_stdio_message(proto, line)
-                if out:
-                    print(out, flush=True)
-
-        else:
-            app = create_app(
-                handlers=None,
-                use_discovery=not args.no_discovery,
-                handler_packages=args.handler_packages
-            )
-            logging.info(f"Starting HTTP server on {args.host}:{args.port}")
-            uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    host = cfg.get("server", {}).get("host", "127.0.0.1")
+    port = cfg.get("server", {}).get("port", 8000)
+    logging.info(f"Starting HTTP server on {host}:{port}")
+    uvicorn.run(root_app, host=host, port=port, log_level=L.get("level", "info"))
 
 if __name__ == "__main__":
     main()
