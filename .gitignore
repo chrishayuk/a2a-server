@@ -11,3 +11,6 @@ wheels/
 
 # cache
 .pytest_cache
+
+# env
+.env
