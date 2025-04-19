@@ -2,7 +2,6 @@
 from fastapi import FastAPI
 import logging
 
-# a2a imports
 from a2a.json_rpc.protocol import JSONRPCProtocol
 from a2a.server.tasks.task_manager import TaskManager
 from a2a.server.pubsub import EventBus
@@ -10,89 +9,64 @@ from a2a.server.methods import register_methods
 from a2a.server.transport import setup_http, setup_ws, setup_sse
 from a2a.server.tasks.discovery import register_discovered_handlers
 from a2a.server.tasks.handlers.echo_handler import EchoHandler
+from a2a.server.tasks.task_handler import TaskHandler
 
 logger = logging.getLogger(__name__)
 
 def create_app(
-    use_handler_discovery: bool = True,
-    handler_packages: list[str] = None,
-    custom_handlers: list = None,
-    default_handler = None
+    handlers: list[TaskHandler] | None = None,
+    *,
+    use_discovery: bool = False,
+    handler_packages: list[str] | None = None
 ) -> FastAPI:
     """
-    Create and configure the FastAPI application with all A2A components.
-    
+    Create and configure the FastAPI application with A2A components.
+
     Args:
-        use_handler_discovery: Whether to use automatic handler discovery
-        handler_packages: Optional list of packages to search for handlers
-        custom_handlers: Optional list of handler instances to register manually
-        default_handler: Optional handler to use as default
-    
+        handlers: Optional list of TaskHandler instances. If provided,
+                  the first is registered as the default, others as non-default.
+        use_discovery: If True and no handlers given, automatically discover handlers.
+        handler_packages: Packages to search for discovery (when use_discovery=True).
+
     Returns:
-        FastAPI: Configured application instance with HTTP, WS, and SSE endpoints
+        Configured FastAPI app with HTTP, WS, and SSE transports.
     """
-    # Create the core components
     event_bus = EventBus()
     manager = TaskManager(event_bus)
     protocol = JSONRPCProtocol()
 
-    # Register custom handlers first, if provided
-    if custom_handlers:
-        custom_handler_names = []
-        default_handler_name = None
-        
-        for handler in custom_handlers:
-            is_default = default_handler is not None and handler is default_handler
-            manager.register_handler(handler, default=is_default)
-            
-            if is_default:
-                default_handler_name = handler.name
-            else:
-                custom_handler_names.append(handler.name)
-            
-            # Log individual handlers at debug level
-            logger.debug(f"Registered custom handler: {handler.name}{' (default)' if is_default else ''}")
-        
-        # Log a summary at info level
-        if default_handler_name:
-            logger.info(f"Registered custom handlers: {default_handler_name} (default){', ' + ', '.join(custom_handler_names) if custom_handler_names else ''}")
-        elif custom_handler_names:
-            logger.info(f"Registered custom handlers: {', '.join(custom_handler_names)}")
+    if handlers:
+        default = handlers[0]
+        for h in handlers:
+            is_default = (h is default)
+            manager.register_handler(h, default=is_default)
+            logger.debug(f"Registered handler: {h.name}{' (default)' if is_default else ''}")
+        logger.info(f"Registered {len(handlers)} handler(s) (default: {default.name})")
+    elif use_discovery:
+        logger.info("Discovering handlers automatically")
+        register_discovered_handlers(manager, packages=handler_packages)
+    else:
+        logger.info("No handlers provided; using fallback EchoHandler")
+        manager.register_handler(EchoHandler(), default=True)
 
-    # Register task handlers from discovery if enabled
-    if use_handler_discovery:
-        logger.info("Using automatic handler discovery")
-        # Only set a default handler from discovery if no custom default was provided
-        discovery_default = None if default_handler else EchoHandler
-        register_discovered_handlers(
-            manager, 
-            packages=handler_packages,
-            default_handler_class=discovery_default.__class__ if discovery_default else None
-        )
-    elif not custom_handlers:
-        # If no discovery and no custom handlers, register at least EchoHandler as fallback
-        logger.info("Using manual handler registration")
-        manager.register_handler(EchoHandler(), default=(default_handler is None))
-        logger.debug("Registered EchoHandler as default" if default_handler is None else "Registered EchoHandler")
-    
     # Register JSON-RPC methods
     register_methods(protocol, manager)
-    logger.debug("Registered JSON-RPC methods")
+    logger.debug("JSON-RPC methods registered")
 
-    # Create and configure the FastAPI app
+    # Build the FastAPI application
     app = FastAPI(
         title="A2A Server",
-        description="Agent-to-Agent communication server with JSON-RPC over multiple transports",
+        description="Agent-to-Agent communication server with JSON-RPC over HTTP, WS, and SSE",
     )
-    
-    # Setup all transport layers
+
+    # Wire up transports
     setup_http(app, protocol)
     setup_ws(app, protocol, event_bus)
     setup_sse(app, event_bus)
-    logger.debug("Set up HTTP, WebSocket, and SSE transports")
+    logger.debug("Configured HTTP, WebSocket, and SSE transports")
 
     return app
 
 
-# Default application instance
+# Default app instance (echo handler only)
 app = create_app()

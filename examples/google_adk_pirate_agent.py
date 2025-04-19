@@ -3,17 +3,15 @@
 """
 A2A Google ADK Agent Server Example
 
-This example launches an A2A server using a GoogleADKHandler wrapped around
-a pirate agent.
+This example launches an A2A server by passing a raw Google ADK `Agent`
+directly into the handler; no manual adapter import or `use_handler_discovery`
+flag is needed.
 """
-import logging
 import uvicorn
 
-# a2a
+# a2a imports
 from a2a.server.app import create_app
 from a2a.server.tasks.handlers.google_adk_handler import GoogleADKHandler
-from a2a.server.tasks.handlers.adk_agent_adapter import ADKAgentAdapter
-from a2a.server.logging import configure_logging
 
 # import the sample agent
 from a2a.server.sample_agents.pirate_agent import pirate_agent as agent
@@ -23,25 +21,16 @@ HOST = "0.0.0.0"
 PORT = 8000
 
 def main():
-    # Wrap the ADK Agent in the adapter
-    adapter = ADKAgentAdapter(agent)
+    # Instantiate the handler directly with the raw ADK agent
+    handler = GoogleADKHandler(agent)
 
-    # Instantiate handler
-    handler = GoogleADKHandler(adapter)
-
-    # Create the FastAPI app with only this custom handler
+    # Create the FastAPI app with just this handler
     app = create_app(
-        use_handler_discovery=False,
-        custom_handlers=[handler],
-        default_handler=handler
+        handlers=[handler]
     )
 
-    # Start the server
-    uvicorn.run(
-        app,
-        host=HOST,
-        port=PORT
-    )
+    # Launch the server
+    uvicorn.run(app, host=HOST, port=PORT)
 
 if __name__ == "__main__":
     main()
