@@ -4,10 +4,70 @@ server:
 
 handlers:
   use_discovery: false
-  default: google_adk
+  default: chef_agent
 
-  google_adk:
+  pirate_agent:
     type: a2a.server.tasks.handlers.google_adk_handler.GoogleADKHandler
     agent: a2a.server.sample_agents.pirate_agent.pirate_agent
     name: pirate_agent
+    agent_card:
+      name: Pirate Agent
+      description: "Converts your text into salty pirate‑speak"
+      url: "https://pirate.example.com"
+      version: "0.1.0"
+      documentationUrl: "https://pirate.example.com/docs"
+      provider:
+        organization: "Acme"
+        url: "https://acme.example.com"
+      capabilities:
+        streaming: true
+        pushNotifications: false
+      authentication:
+        schemes:
+          - "Bearer"
+      defaultInputModes:
+        - "text/plain"
+      defaultOutputModes:
+        - "text/plain"
+      skills:
+        - id: pirate-talk
+          name: Pirate Talk
+          description: "Turn any message into pirate lingo"
+          tags:
+            - pirate
+            - fun
+          examples:
+            - "Arrr! Give me yer loot!"
 
+  chef_agent:
+    type: a2a.server.tasks.handlers.google_adk_handler.GoogleADKHandler
+    agent: a2a.server.sample_agents.chef_agent.chef_agent
+    name: chef_agent
+    agent_card:
+      name: Chef Agent
+      description: "Suggests delicious recipes from your ingredients"
+      url: "https://chef.example.com"
+      version: "0.1.0"
+      documentationUrl: "https://chef.example.com/docs"
+      provider:
+        organization: "Acme"
+        url: "https://acme.example.com"
+      capabilities:
+        streaming: true
+        pushNotifications: false
+      authentication:
+        schemes:
+          - "Bearer"
+      defaultInputModes:
+        - "text/plain"
+      defaultOutputModes:
+        - "text/plain"
+      skills:
+        - id: recipe-generation
+          name: Recipe Generation
+          description: "Suggest recipes based on ingredients"
+          tags:
+            - cooking
+            - recipes
+          examples:
+            - "What can I make with chicken, mushrooms, and rice?"

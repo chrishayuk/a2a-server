@@ -5,7 +5,6 @@ Simplified entry point for A2A server with YAML configuration support.
 """
 import argparse
 import pkgutil
-import sys
 import importlib
 import inspect
 import yaml
@@ -40,255 +39,238 @@ DEFAULT_CONFIG = {
     },
     "handlers": {
         "use_discovery": True,
+        "handler_packages": [],
         "default": None,
     }
 }
 
 def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     """Load configuration from a YAML file with defaults."""
-    config = DEFAULT_CONFIG.copy()
-    
+    cfg = DEFAULT_CONFIG.copy()
     if config_path and os.path.exists(config_path):
         with open(config_path, 'r') as f:
-            user_config = yaml.safe_load(f)
-            if user_config:
-                deep_update(config, user_config)
-    
-    return config
+            user_cfg = yaml.safe_load(f)
+        if user_cfg:
+            deep_update(cfg, user_cfg)
+    return cfg
 
-def deep_update(target: Dict, source: Dict) -> None:
-    """Recursively update nested dictionaries."""
-    for key, value in source.items():
-        if key in target and isinstance(target[key], dict) and isinstance(value, dict):
-            deep_update(target[key], value)
+def deep_update(target: Dict, src: Dict) -> None:
+    """Recursively merge src into target."""
+    for k, v in src.items():
+        if k in target and isinstance(target[k], dict) and isinstance(v, dict):
+            deep_update(target[k], v)
         else:
-            target[key] = value
+            target[k] = v
 
 def find_handler_class(handler_type: str) -> Optional[Type[TaskHandler]]:
-    """Find a handler class by name using discovery or direct import."""
-    # Try direct import if it's a full path
+    """Locate a TaskHandler subclass by import path or discovery."""
+    # Fully‑qualified path?
     if "." in handler_type:
         try:
-            module_path, class_name = handler_type.rsplit(".", 1)
-            module = importlib.import_module(module_path)
-            handler_class = getattr(module, class_name)
-            if issubclass(handler_class, TaskHandler):
-                return handler_class
+            mod_path, cls_name = handler_type.rsplit(".", 1)
+            mod = importlib.import_module(mod_path)
+            cls = getattr(mod, cls_name)
+            if issubclass(cls, TaskHandler):
+                return cls
             logging.error(f"{handler_type} is not a TaskHandler subclass")
-            return None
-        except (ImportError, AttributeError) as e:
-            logging.error(f"Error importing {handler_type}: {e}")
-            return None
-    
-    # For simple names, check both discoverable and abstract handlers
-    # First try normal discovery
-    from a2a.server.tasks.discovery import discover_all_handlers
-    all_handlers = discover_all_handlers()
-    
-    for handler_class in all_handlers:
-        if handler_class.__name__ == handler_type:
-            return handler_class
-    
-    # If not found, look for abstract handlers
-    # This is useful for handlers marked with abstract=True like GoogleADKHandler
-    packages = ['a2a.server.tasks.handlers']
-    for package in packages:
-        try:
-            package_module = importlib.import_module(package)
-            for _, name, _ in pkgutil.walk_packages(package_module.__path__, package_module.__name__ + '.'):
-                try:
-                    module = importlib.import_module(name)
-                    for attr_name, obj in inspect.getmembers(module, inspect.isclass):
-                        if (obj.__name__ == handler_type and 
-                            issubclass(obj, TaskHandler) and 
-                            obj is not TaskHandler):
-                            # Found the handler, even if it's abstract
-                            return obj
-                except (ImportError, AttributeError) as e:
-                    logging.warning(f"Error inspecting module {name}: {e}")
-        except ImportError:
-            logging.warning(f"Could not import package {package}")
-    
-    logging.error(f"Could not find handler type: {handler_type}")
-    return None
-
-def load_object(object_spec: str) -> Any:
-    """
-    Load any Python object by module path or using common patterns.
-    
-    This is a generic loader that can be used for agents, adapters, or other objects.
-    """
-    try:
-        # Try direct import first
-        if "." in object_spec:
-            module_path, attr_name = object_spec.rsplit(".", 1)
-            module = importlib.import_module(module_path)
-            return getattr(module, attr_name)
-        
-        # Try common patterns
-        patterns = [
-            f"{object_spec}",                  # Direct module name
-            f"{object_spec}.{object_spec}",    # module.attr with same name
-            f"{object_spec}_agent",            # module_agent
-            f"{object_spec}_agent.{object_spec}",  # module_agent.attr
-            f"agents.{object_spec}",           # agents.module
-            f"{object_spec}.agent"             # module.agent
-        ]
-        
-        for pattern in patterns:
-            try:
-                if "." in pattern:
-                    module_path, attr_name = pattern.rsplit(".", 1)
-                    module = importlib.import_module(module_path)
-                    if hasattr(module, attr_name):
-                        return getattr(module, attr_name)
-                else:
-                    module = importlib.import_module(pattern)
-                    # Look for 'agent' attribute or the first attribute that matches the module name
-                    if hasattr(module, 'agent'):
-                        return module.agent
-                    # Try to find anything with matching name
-                    for attr_name in dir(module):
-                        if attr_name.lower() == object_spec.lower():
-                            return getattr(module, attr_name)
-            except ImportError:
-                continue
-                
-        raise ImportError(f"Could not find object '{object_spec}'")
-    except Exception as e:
-        logging.error(f"Error loading object {object_spec}: {e}")
+        except Exception as e:
+            logging.error(f"Error importing handler {handler_type}: {e}")
         return None
 
-def prepare_handler_params(handler_class: Type[TaskHandler], config: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Prepare parameters for handler instantiation based on config and class signature.
-    """
-    # Copy all config entries except the `type` field
-    params = {k: v for k, v in config.items() if k != "type"}
+    # Try discovery list
+    for cls in discover_all_handlers():
+        if cls.__name__ == handler_type:
+            return cls
 
-    # Inspect the handler’s __init__ signature
-    sig = inspect.signature(handler_class.__init__)
-    param_names = list(sig.parameters.keys())[1:]  # skip 'self'
-
-    for param_name in param_names:
-        # Never try to import the `name` parameter—use it verbatim
-        if param_name == "name":
-            continue
-
-        # If given as a string, attempt to load it as an object
-        if param_name in params and isinstance(params[param_name], str):
+    # Walk the handlers package for abstract classes
+    pkg = "a2a.server.tasks.handlers"
+    try:
+        root = importlib.import_module(pkg)
+        for _, name, _ in pkgutil.walk_packages(root.__path__, pkg + "."):
             try:
-                params[param_name] = load_object(params[param_name])
-                logging.debug(f"Loaded object for parameter {param_name}: {params[param_name]}")
+                m = importlib.import_module(name)
+                for _, obj in inspect.getmembers(m, inspect.isclass):
+                    if obj.__name__ == handler_type and issubclass(obj, TaskHandler):
+                        return obj
+            except ImportError:
+                continue
+    except ImportError:
+        pass
+
+    logging.error(f"Could not find handler class '{handler_type}'")
+    return None
+
+def load_object(spec: str) -> Any:
+    """Dynamically import any referenced object."""
+    if "." in spec:
+        try:
+            mod_path, attr = spec.rsplit(".", 1)
+            mod = importlib.import_module(mod_path)
+            return getattr(mod, attr)
+        except Exception:
+            pass
+
+    # fallback common patterns
+    for pat in (
+        spec,
+        f"{spec}.{spec}",
+        f"{spec}_agent",
+        f"{spec}_agent.{spec}",
+        f"agents.{spec}",
+        f"{spec}.agent"
+    ):
+        try:
+            if "." in pat:
+                mp, attr = pat.rsplit(".", 1)
+                m = importlib.import_module(mp)
+                if hasattr(m, attr):
+                    return getattr(m, attr)
+            else:
+                m = importlib.import_module(pat)
+                if hasattr(m, 'agent'):
+                    return m.agent
+        except ImportError:
+            pass
+
+    raise ImportError(f"Could not locate object '{spec}'")
+
+def prepare_handler_params(
+    handler_cls: Type[TaskHandler],
+    cfg: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Build kwargs for handler_cls.__init__:
+    - include only those keys that match the init signature (plus 'name')
+    - attempt to load strings via import for other object params
+    """
+    sig = inspect.signature(handler_cls.__init__)
+    valid_params = set(sig.parameters.keys()) - {"self"}
+    params: Dict[str, Any] = {}
+
+    for k, v in cfg.items():
+        if k == "type":
+            continue
+        if k not in valid_params:
+            # skip unknown args (like 'agent_card')
+            continue
+        if k != "name" and isinstance(v, str):
+            # try to import
+            try:
+                params[k] = load_object(v)
+                logging.debug(f"Prepared param {k} → {params[k]}")
+                continue
             except Exception:
-                # Import failed? Just leave it as the original string
                 pass
+        params[k] = v
 
     return params
 
+def setup_handlers(
+    handlers_cfg: Dict[str, Any]
+) -> Tuple[List[TaskHandler], Optional[TaskHandler]]:
+    """
+    Instantiate everything under 'handlers' in the config.
+    Returns (all_handlers, default_handler).
+    """
+    all_handlers: List[TaskHandler] = []
+    default_inst: Optional[TaskHandler] = None
+    default_key = handlers_cfg.get("default")
 
-def setup_handlers(config: Dict) -> Tuple[List[TaskHandler], Optional[TaskHandler]]:
-    """Set up handlers based on configuration."""
-    handlers_config = config.get("handlers", {})
-    use_discovery = handlers_config.get("use_discovery", True)
-    default_handler_name = handlers_config.get("default")
-    
-    custom_handlers = []
-    default_handler = None
-    
-    # Process handler definitions
-    for name, handler_config in handlers_config.items():
-        # Skip non-handler entries
-        if name in ("use_discovery", "default") or not isinstance(handler_config, dict):
+    for key, sub in handlers_cfg.items():
+        if key in ("use_discovery", "handler_packages", "default"):
             continue
-            
-        handler_type = handler_config.get("type")
-        if not handler_type:
-            logging.warning(f"Handler '{name}' missing 'type' field")
+        if not isinstance(sub, dict):
             continue
-        
-        # Find handler class using discovery or direct import
-        handler_class = find_handler_class(handler_type)
-            
-        if not handler_class:
-            logging.error(f"Could not load handler type: {handler_type}")
+
+        htype = sub.get("type")
+        if not htype:
+            logging.warning(f"Handler '{key}' missing 'type'")
             continue
-            
-        # Create handler instance
+
+        cls = find_handler_class(htype)
+        if not cls:
+            continue
+
+        sub.setdefault("name", key)
+        params = prepare_handler_params(cls, sub)
+
         try:
-            # Set name from config key if not explicitly provided
-            if "name" not in handler_config:
-                handler_config["name"] = name
-                
-            # Prepare parameters
-            params = prepare_handler_params(handler_class, handler_config)
-            
-            # Instantiate handler
-            handler = handler_class(**params)
-            custom_handlers.append(handler)
-            
-            # Check if this is the default handler
-            if name == default_handler_name:
-                default_handler = handler
-                
+            inst = cls(**params)
+            # attach the raw agent_card dict, if any
+            if "agent_card" in sub:
+                setattr(inst, "agent_card", sub["agent_card"])
+                logging.debug(f"Attached agent_card to handler '{key}'")
+
+            all_handlers.append(inst)
+            if key == default_key:
+                default_inst = inst
+
         except Exception as e:
-            logging.error(f"Error creating handler '{name}': {e}", exc_info=True)
-    
-    return custom_handlers, default_handler
+            logging.error(f"Error instantiating handler '{key}': {e}", exc_info=True)
+
+    return all_handlers, default_inst
 
 def run_server():
-    """Run the A2A server using YAML configuration."""
-    parser = argparse.ArgumentParser(description="A2A Server with YAML configuration")
+    parser = argparse.ArgumentParser(description="A2A Server (YAML config)")
+    parser.add_argument("-c", "--config", help="YAML config path")
     parser.add_argument(
-        "--config", "-c",
-        help="Path to YAML configuration file"
+        "-p", "--handler-package",
+        action="append", dest="handler_packages",
+        help="Additional packages to search for handlers"
+    )
+    parser.add_argument(
+        "--no-discovery",
+        action="store_true",
+        help="Disable automatic handler discovery"
     )
     parser.add_argument(
         "--log-level",
-        choices=["debug", "info", "warning", "error", "critical"],
-        help="Override logging level from config"
+        choices=["debug","info","warning","error","critical"],
+        help="Override configured log level"
     )
     args = parser.parse_args()
-    
-    # Load configuration
-    config = load_config(args.config)
-    
-    # Override log level if specified
+
+    # Load & merge YAML config
+    cfg = load_config(args.config)
     if args.log_level:
-        config["logging"]["level"] = args.log_level
-    
+        cfg["logging"]["level"] = args.log_level
+    if args.handler_packages:
+        cfg["handlers"]["handler_packages"] = args.handler_packages
+    if args.no_discovery:
+        cfg["handlers"]["use_discovery"] = False
+
     # Configure logging
-    log_config = config["logging"]
+    L = cfg["logging"]
     configure_logging(
-        level_name=log_config["level"],
-        file_path=log_config.get("file"),
-        verbose_modules=log_config.get("verbose_modules", []),
-        quiet_modules=log_config.get("quiet_modules", {})
+        level_name=L["level"],
+        file_path=L.get("file"),
+        verbose_modules=L.get("verbose_modules", []),
+        quiet_modules=L.get("quiet_modules", {})
     )
-    
-    # Set up handlers
-    custom_handlers, default_handler = setup_handlers(config)
-    
+
+    # Instantiate handlers
+    custom_handlers, default_handler = setup_handlers(cfg["handlers"])
+
+    # ── Promote the YAML‑specified default to the front ───────────────
+    if default_handler:
+        handlers_list = [default_handler] + [
+            h for h in custom_handlers if h is not default_handler
+        ]
+    else:
+        handlers_list = custom_handlers or None
+
     # Create FastAPI app
-    handlers_config = config.get("handlers", {})
-    app = create_app(
-        use_handler_discovery=handlers_config.get("use_discovery", True),
-        custom_handlers=custom_handlers,
-        default_handler=default_handler
+    app: FastAPI = create_app(
+        handlers=handlers_list,
+        use_discovery=cfg["handlers"]["use_discovery"],
+        handler_packages=cfg["handlers"]["handler_packages"]
     )
-    
-    # Start server
-    server_config = config.get("server", {})
-    host = server_config.get("host", "127.0.0.1")
-    port = server_config.get("port", 8000)
-    
+
+    # Run
+    host = cfg["server"].get("host", "127.0.0.1")
+    port = cfg["server"].get("port", 8000)
     logging.info(f"Starting A2A server on http://{host}:{port}")
-    uvicorn.run(
-        app,
-        host=host,
-        port=port,
-        log_level=log_config["level"].lower()
-    )
+    uvicorn.run(app, host=host, port=port, log_level=L["level"])
 
 if __name__ == "__main__":
     run_server()
