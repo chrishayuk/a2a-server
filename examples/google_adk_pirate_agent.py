@@ -4,8 +4,9 @@
 A2A Google ADK Agent Server Example
 
 This example launches an A2A server using a GoogleADKHandler wrapped around
-any Google ADK `Agent` via the `ADKAgentAdapter` shim.
+a pirate agent.
 """
+import argparse
 import logging
 import uvicorn
 
@@ -13,40 +14,65 @@ import uvicorn
 from a2a.server.app import create_app
 from a2a.server.tasks.handlers.google_adk_handler import GoogleADKHandler
 from a2a.server.tasks.handlers.adk_agent_adapter import ADKAgentAdapter
+from a2a.server.logging import configure_logging
 
-# agents
-from pirate_agent import pirate_agent as agent
-
+# import the sample agent
+from a2a.server.sample_agents.pirate_agent import pirate_agent as agent
 
 def main():
-    # Configure logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="A2A Pirate Agent Server")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host for HTTP server"
     )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port for HTTP server"
+    )
+    parser.add_argument(
+        "--log-level",
+        choices=["debug", "info", "warning", "error", "critical"],
+        default="info",
+        help="Logging level"
+    )
+    args = parser.parse_args()
+    
+    # Configure logging
+    configure_logging(
+        level_name=args.log_level,
+        quiet_modules={
+            "httpx": "ERROR",
+            "LiteLLM": "ERROR",
+            "google.adk": "ERROR",
+            "uvicorn": "WARNING",
+        }
+    )
+    
     logger = logging.getLogger(__name__)
-
-    # Wrap the native ADK agent with our adapter shim
+    
+    # Create the handler
     adapter = ADKAgentAdapter(agent)
-
-    # Name the handler after the agent's internal name
-    handler_name = getattr(agent, 'name', 'adk_agent')
+    handler_name = getattr(agent, 'name', 'pirate_agent')
     handler = GoogleADKHandler(adapter, name=handler_name)
-
-    # Create the FastAPI app, registering only this custom handler
+    
+    # Create the FastAPI app
     app = create_app(
         use_handler_discovery=False,
         custom_handlers=[handler],
-        default_handler=handler,
+        default_handler=handler
     )
-
-    # Launch via Uvicorn
-    logger.info(f"Starting A2A ADK Agent Server on http://127.0.0.1:8000 (handler: {handler_name})...")
+    
+    # Run the server
+    logger.info(f"Starting A2A Pirate Agent Server on http://{args.host}:{args.port}")
     uvicorn.run(
         app,
-        host="127.0.0.1",
-        port=8000,
-        log_level="info",
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level.lower()
     )
 
 

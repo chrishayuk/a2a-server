@@ -1,0 +1,13 @@
+# pirate_agent.yaml
+server:
+  port: 8000
+
+handlers:
+  use_discovery: false
+  default: google_adk
+
+  google_adk:
+    type: a2a.server.tasks.handlers.google_adk_handler.GoogleADKHandler
+    agent: a2a.server.sample_agents.pirate_agent.pirate_agent
+    name: pirate_agent
+

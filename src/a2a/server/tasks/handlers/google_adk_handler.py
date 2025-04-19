@@ -22,6 +22,8 @@ from a2a.json_rpc.spec import (
     TaskStatusUpdateEvent,
     TaskArtifactUpdateEvent
 )
+# ← import our adapter
+from a2a.server.tasks.handlers.adk_agent_adapter import ADKAgentAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +59,13 @@ class GoogleADKHandler(TaskHandler):
     """Task handler for Google ADK agents with streaming and sync support."""
 
     def __init__(self, agent: GoogleADKAgentProtocol, name: str = "google_adk"):
+        # If this is a raw ADK Agent (no invoke/stream), wrap it
+        if not (callable(getattr(agent, "invoke", None)) and callable(getattr(agent, "stream", None))):
+            agent = ADKAgentAdapter(agent)
+
         self._agent = agent
         self._name = name
+        logger.debug(f"Initialized {self._name} handler with agent type {type(agent).__name__}")
 
     @property
     def name(self) -> str:
@@ -82,36 +89,44 @@ class GoogleADKHandler(TaskHandler):
         session_id: Optional[str]
     ) -> AsyncIterable[TaskStatusUpdateEvent | TaskArtifactUpdateEvent]:
         # Initial working status
+        logger.debug(f"Starting streaming response for task {task_id}")
         yield TaskStatusUpdateEvent(id=task_id, status=TaskStatus(state=TaskState.working), final=False)
         try:
             async for item in self._agent.stream(query, session_id):
                 if not item.get("is_task_complete", False):
                     continue
+
+                logger.debug(f"Received completed task response for {task_id}")
                 content = item.get("content", "")
                 parts: List[Any] = []
                 final_state = TaskState.completed
+
                 if isinstance(content, dict):
                     if "response" in content and "result" in content["response"]:
                         try:
                             data = json.loads(content["response"]["result"])
                             parts.append(DataPart(type="data", data=data))
                             final_state = TaskState.input_required
+                            logger.debug(f"Task {task_id} requires additional input")
                         except json.JSONDecodeError:
                             parts.append(TextPart(type="text", text=str(content["response"]["result"])))
                     else:
                         parts.append(DataPart(type="data", data=content))
                 else:
                     parts.append(TextPart(type="text", text=str(content)))
+
                 artifact = Artifact(name="google_adk_result", parts=parts, index=0)
                 _attach_raw_attributes(artifact.parts)
                 yield TaskArtifactUpdateEvent(id=task_id, artifact=artifact)
                 yield TaskStatusUpdateEvent(id=task_id, status=TaskStatus(state=final_state), final=True)
+                logger.debug(f"Task {task_id} completed with state {final_state}")
                 return
         except ValueError as e:
-            # Likely missing credentials; propagate for fallback
+            logger.debug(f"Value error in streaming for task {task_id} (will try sync): {e}")
             raise
         except Exception as e:
             logger.error(f"Error in Google ADK streaming: {e}")
+            logger.debug("Full exception details:", exc_info=True)
             error_msg = f"Error processing request: {e}"
             error_message = Message(role=Role.agent, parts=[TextPart(type="text", text=error_msg)])
             _attach_raw_attributes(error_message.parts)
@@ -126,24 +141,14 @@ class GoogleADKHandler(TaskHandler):
         session_id: Optional[str]
     ) -> AsyncIterable[TaskStatusUpdateEvent | TaskArtifactUpdateEvent]:
         # Working status
+        logger.debug(f"Starting synchronous response for task {task_id}")
         yield TaskStatusUpdateEvent(id=task_id, status=TaskStatus(state=TaskState.working), final=False)
         try:
             result = await asyncio.to_thread(self._agent.invoke, query, session_id)
+            logger.debug(f"Received synchronous response for task {task_id}")
         except Exception as e:
-            error_msg = str(e)
-            # Fallback for missing credentials: use agent.get_current_time() if available
-            if "Missing key inputs argument" in error_msg and hasattr(self._agent, "get_current_time"):
-                try:
-                    data = self._agent.get_current_time()
-                    parts = [DataPart(type="data", data=data)]
-                    artifact = Artifact(name="google_adk_result", parts=parts, index=0)
-                    _attach_raw_attributes(artifact.parts)
-                    yield TaskArtifactUpdateEvent(id=task_id, artifact=artifact)
-                    yield TaskStatusUpdateEvent(id=task_id, status=TaskStatus(state=TaskState.completed), final=True)
-                    return
-                except Exception as fallback_e:
-                    logger.error(f"Fallback get_current_time failed: {fallback_e}")
             logger.error(f"Error in Google ADK invocation: {e}")
+            logger.debug("Full exception details:", exc_info=True)
             error_msg = f"Error processing request: {e}"
             error_message = Message(role=Role.agent, parts=[TextPart(type="text", text=error_msg)])
             _attach_raw_attributes(error_message.parts)
@@ -151,6 +156,7 @@ class GoogleADKHandler(TaskHandler):
             object.__setattr__(status, 'message', error_message)
             yield TaskStatusUpdateEvent(id=task_id, status=status, final=True)
             return
+
         is_input = "MISSING_INFO:" in result
         final_state = TaskState.input_required if is_input else TaskState.completed
         parts: List[Any] = [TextPart(type="text", text=result)]
@@ -158,6 +164,7 @@ class GoogleADKHandler(TaskHandler):
         _attach_raw_attributes(artifact.parts)
         yield TaskArtifactUpdateEvent(id=task_id, artifact=artifact)
         yield TaskStatusUpdateEvent(id=task_id, status=TaskStatus(state=final_state), final=True)
+        logger.debug(f"Task {task_id} completed with state {final_state}")
 
     async def process_task(
         self,
@@ -165,20 +172,26 @@ class GoogleADKHandler(TaskHandler):
         message: Message,
         session_id: Optional[str] = None
     ) -> AsyncIterable[TaskStatusUpdateEvent | TaskArtifactUpdateEvent]:
+        logger.debug(f"Processing task {task_id} with session {session_id or 'new'}")
         query = self._extract_text_query(message)
-        # Determine if streaming should be used (skip for real Google ADK agents)
-        use_stream = callable(getattr(self._agent, 'stream', None)) and not type(self._agent).__module__.startswith('google.adk')
+
+        use_stream = callable(getattr(self._agent, 'stream', None)) \
+                     and not type(self._agent).__module__.startswith('google.adk')
+
         if use_stream:
+            logger.debug(f"Using streaming mode for task {task_id}")
             try:
                 async for event in self._handle_streaming_response(task_id, query, session_id):
                     yield event
                 return
             except ValueError:
-                logger.warning("Streaming failed, falling back to synchronous invocation")
-        # Synchronous fallback or if streaming not desired
+                logger.debug(f"Streaming failed for task {task_id}, falling back to synchronous invocation")
+        else:
+            logger.debug(f"Using synchronous mode for task {task_id}")
+
         async for event in self._handle_sync_response(task_id, query, session_id):
             yield event
 
     async def cancel_task(self, task_id: str) -> bool:
-        logger.info(f"Cancellation request for task {task_id} - not supported by Google ADK agent")
+        logger.debug(f"Cancellation request for task {task_id} - not supported by Google ADK agent")
         return False

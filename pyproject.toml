@@ -17,6 +17,7 @@ dependencies = [
   "httpx>=0.28.1",
   "litellm>=1.66.3",
   "pydantic>=2.11.3",
+  "pyyaml>=6.0.2",
   "uvicorn>=0.34.1",
 ]
 
@@ -42,7 +43,7 @@ generate-models = "bash scripts/generate_models.sh"
 test            = "pytest"
 
 [project.scripts]
-a2a-server = "a2a.server.cli:main"
+a2a-server = "a2a.server.__main__:main"
 a2a-client = "a2a.client.cli:main"
 
 # pytest settings so it finds your src/ layout automatically
