@@ -6,7 +6,6 @@ A2A Google ADK Agent Server Example
 This example launches an A2A server using a GoogleADKHandler wrapped around
 a pirate agent.
 """
-import argparse
 import logging
 import uvicorn
 
@@ -19,62 +18,30 @@ from a2a.server.logging import configure_logging
 # import the sample agent
 from a2a.server.sample_agents.pirate_agent import pirate_agent as agent
 
+# constants
+HOST = "0.0.0.0"
+PORT = 8000
+
 def main():
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="A2A Pirate Agent Server")
-    parser.add_argument(
-        "--host",
-        default="127.0.0.1",
-        help="Host for HTTP server"
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Port for HTTP server"
-    )
-    parser.add_argument(
-        "--log-level",
-        choices=["debug", "info", "warning", "error", "critical"],
-        default="info",
-        help="Logging level"
-    )
-    args = parser.parse_args()
-    
-    # Configure logging
-    configure_logging(
-        level_name=args.log_level,
-        quiet_modules={
-            "httpx": "ERROR",
-            "LiteLLM": "ERROR",
-            "google.adk": "ERROR",
-            "uvicorn": "WARNING",
-        }
-    )
-    
-    logger = logging.getLogger(__name__)
-    
-    # Create the handler
+    # Wrap the ADK Agent in the adapter
     adapter = ADKAgentAdapter(agent)
-    handler_name = getattr(agent, 'name', 'pirate_agent')
-    handler = GoogleADKHandler(adapter, name=handler_name)
-    
-    # Create the FastAPI app
+
+    # Instantiate handler
+    handler = GoogleADKHandler(adapter)
+
+    # Create the FastAPI app with only this custom handler
     app = create_app(
         use_handler_discovery=False,
         custom_handlers=[handler],
         default_handler=handler
     )
-    
-    # Run the server
-    logger.info(f"Starting A2A Pirate Agent Server on http://{args.host}:{args.port}")
+
+    # Start the server
     uvicorn.run(
         app,
-        host=args.host,
-        port=args.port,
-        log_level=args.log_level.lower()
+        host=HOST,
+        port=PORT
     )
-
 
 if __name__ == "__main__":
     main()

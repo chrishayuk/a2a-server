@@ -57,7 +57,7 @@ uv run a2a-server --no-discovery
 ### Example: Pirate Agent via YAML
 
 You can configure a custom Google ADK–based "pirate" agent entirely in YAML.  
-Create `pirate_agent.yaml`:
+Create `agent.yaml`:
 
 ```yaml
 server:
@@ -112,36 +112,42 @@ Alternatively, spin up the pirate agent with a self-contained script:
 """
 A2A Google ADK Agent Server Example
 """
-import argparse, logging, uvicorn
+import logging
+import uvicorn
 from a2a.server.app import create_app
 from a2a.server.tasks.handlers.google_adk_handler import GoogleADKHandler
 from a2a.server.tasks.handlers.adk_agent_adapter import ADKAgentAdapter
 from a2a.server.logging import configure_logging
 from a2a.server.sample_agents.pirate_agent import pirate_agent as agent
 
-# Wrap raw ADK Agent and register
-adapter = ADKAgentAdapter(agent)
-handler = GoogleADKHandler(adapter, name=getattr(agent, 'name', 'pirate_agent'))
+# Constants
+HOST = "0.0.0.0"
+PORT = 8000
 
-# Create app with this handler only
-app = create_app(
-    use_handler_discovery=False,
-    custom_handlers=[handler],
-    default_handler=handler
-)
+# Configure logging
+configure_logging(level_name="info")
+logger = logging.getLogger(__name__)
+
+
+def main():
+    # Wrap the ADK Agent and instantiate handler (defaults to agent.name)
+    adapter = ADKAgentAdapter(agent)
+    handler = GoogleADKHandler(adapter)
+
+    # Create FastAPI app with only this handler
+    app = create_app(
+        use_handler_discovery=False,
+        custom_handlers=[handler],
+        default_handler=handler
+    )
+
+    # Start server
+    logger.info(f"Starting A2A Pirate Agent Server on http://{HOST}:{PORT}")
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--host', default='127.0.0.1')
-    parser.add_argument('--port', type=int, default=8000)
-    parser.add_argument('--log-level', default='info')
-    args = parser.parse_args()
-
-    configure_logging(level_name=args.log_level)
-    logging.getLogger(__name__).info(
-        f"Starting Pirate Agent Server on http://{args.host}:{args.port}"
-    )
-    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    main()
 ```
 
 ## Handler Details
@@ -153,7 +159,7 @@ if __name__ == "__main__":
 
 Subclass `TaskHandler`, implement `process_task`, and register via:
 
-- **Automatic discovery** (`--handler-package`)  
+- **Automatic discovery** (`--handler-package`)
 - **Entry points** in `setup.py` under `a2a.task_handlers`
 
 ### Installation
@@ -181,19 +187,7 @@ After installation, run the server or client using `uv run`:
 ```bash
 uv run a2a-server --host 0.0.0.0 --port 8000 --log-level info
 uv run a2a-client --help
-```bash
-git clone https://github.com/yourusername/a2a.git
-cd a2a
-pip install -e .
 ```
-
-Install optional extras as needed:
-
-- **Core JSON-RPC only**: `pip install -e ".[jsonrpc]"`
-- **Server** (HTTP, WS, SSE): `pip install -e ".[server]"`
-- **Client CLI**: `pip install -e ".[client]"`
-- **Google ADK agent support**: `pip install -e ".[adk]"`
-- **All features**: `pip install -e ".[full]"`
 
 ### Requirements
 
@@ -207,3 +201,4 @@ Install optional extras as needed:
 ```bash
 pytest
 ```
+
