@@ -9,10 +9,10 @@ The A2A server provides a flexible JSON-RPC interface for agent-to-agent communi
 ### Features
 
 - **Multiple Transport Protocols**:
-  - HTTP JSON-RPC endpoint
-  - WebSocket for bidirectional communication
-  - Server-Sent Events (SSE) for real-time updates
-  - Standard I/O mode for CLI applications
+  - HTTP JSON-RPC endpoint (`POST /rpc`)
+  - WebSocket for bidirectional communication (`/ws`)
+  - Server-Sent Events (SSE) for real-time updates (`/events`)
+  - Standard I/O mode for CLI applications (`--stdio`)
 
 - **Task-Based Workflow**:
   - Create and manage asynchronous tasks
@@ -26,13 +26,34 @@ The A2A server provides a flexible JSON-RPC interface for agent-to-agent communi
 
 - **Extensible Handler System**:
   - Automatic handler discovery
-  - Plugin system via entry points
-  - Custom handler development
+  - Plugin system via entry points (`a2a.task_handlers`)
+  - Custom handler development via subclassing `TaskHandler`
 
 ### Running the Server
 
 ```bash
-# Basic usage (HTTP, WebSocket, and SSE on port 8000)
+# Basic usage (HTTP, WS, SSE on port 8000)
+uv run a2a-server
+
+# Specify host and port
+uv run a2a-server --host 0.0.0.0 --port 8000
+
+# Enable detailed logging
+uv run a2a-server --log-level debug
+
+# Run in stdio JSON-RPC mode
+uv run a2a-server --stdio
+
+# List all available task handlers
+uv run a2a-server --list-handlers
+
+# Register additional handler packages
+uv run a2a-server --handler-package my_custom_module.handlers
+
+# Disable automatic handler discovery
+uv run a2a-server --no-discovery
+```bash
+# Basic usage (HTTP, WS, SSE on port 8000)
 a2a-server
 
 # Specify host and port
@@ -41,162 +62,141 @@ a2a-server --host 0.0.0.0 --port 8000
 # Enable detailed logging
 a2a-server --log-level debug
 
-# Run in standard I/O mode (for CLI applications)
+# Run in stdio JSON-RPC mode
 a2a-server --stdio
 
 # List all available task handlers
 a2a-server --list-handlers
 
-# Specify additional handler packages
+# Register additional handler packages
 a2a-server --handler-package my_custom_module.handlers
 
 # Disable automatic handler discovery
 a2a-server --no-discovery
 ```
 
-### Server Endpoints
+### Example: Pirate Agent via YAML
 
-- `POST /rpc` - HTTP JSON-RPC endpoint
-- `GET /ws` - WebSocket endpoint for bidirectional JSON-RPC
-- `GET /events` - Server-Sent Events (SSE) for real-time updates
+You can configure a custom Google ADK–based "pirate" agent entirely in YAML.  
+Create `pirate_agent.yaml`:
 
-### JSON-RPC Methods
+```yaml
+server:
+  port: 8000
 
-| Method | Description | Parameters |
-|--------|-------------|------------|
-| `tasks/send` | Create a new task | `message`, `session_id` (optional) |
-| `tasks/get` | Get task details | `id` |
-| `tasks/cancel` | Cancel a running task | `id` |
-| `tasks/sendSubscribe` | Create a task and subscribe to updates | `message`, `session_id` (optional), `handler` (optional) |
-| `tasks/resubscribe` | Reconnect to event stream | `id` |
+handlers:
+  use_discovery: false    # skip built-in echo handler
+  default: pirate_agent
 
-### Task Lifecycle
-
-Tasks follow a state machine with these transitions:
-
-- `submitted` → `working` → `completed` / `failed` / `canceled`
-- `working` → `input_required` → `working` (for interactive tasks)
-
-### Task Handlers
-
-Tasks are processed by handlers that implement specific functionality. The server includes a basic `EchoHandler` by default and can discover additional handlers automatically.
-
-#### Built-in Handlers
-
-- `echo` - Simple echo handler that returns the input message
-
-#### Creating Custom Handlers
-
-Create a custom handler by subclassing `TaskHandler`:
-
-```python
-from a2a.server.tasks.task_handler import TaskHandler
-from a2a.json_rpc.spec import (
-    Message, TaskStatus, TaskState, Artifact, TextPart,
-    TaskStatusUpdateEvent, TaskArtifactUpdateEvent, Role
-)
-
-class MyCustomHandler(TaskHandler):
-    @property
-    def name(self) -> str:
-        return "my_handler"
-    
-    async def process_task(self, task_id, message, session_id=None):
-        # Update status to working
-        yield TaskStatusUpdateEvent(
-            id=task_id,
-            status=TaskStatus(state=TaskState.working),
-            final=False
-        )
-        
-        # Process the message...
-        
-        # Yield completion
-        yield TaskStatusUpdateEvent(
-            id=task_id,
-            status=TaskStatus(state=TaskState.completed),
-            final=True
-        )
+  pirate_agent:
+    type: a2a.server.tasks.handlers.google_adk_handler.GoogleADKHandler
+    agent: a2a.server.sample_agents.pirate_agent.pirate_agent
+    name: pirate_agent
 ```
 
-#### Handler Discovery
-
-Handlers are automatically discovered from:
-
-1. Built-in handlers in `a2a.server.tasks.handlers`
-2. Custom packages specified with `--handler-package`
-3. Entry points in installed packages
-
-To register handlers via entry points, add this to your `setup.py`:
-
-```python
-setup(
-    name="my-a2a-handlers",
-    # ...
-    entry_points={
-        "a2a.task_handlers": [
-            "my_handler = my_module.handlers:MyCustomHandler",
-        ],
-    },
-)
-```
-
-### Implementation Details
-
-The server is built on these core components:
-
-- **TaskManager**: Handles task creation, state transitions, and artifact management
-- **EventBus**: Provides publish/subscribe functionality for real-time updates
-- **JSONRPCProtocol**: Implements the JSON-RPC 2.0 specification
-- **TaskHandlerRegistry**: Manages task handler registration and selection
-
-The architecture is fully asynchronous, using Python's asyncio and FastAPI for high performance.
-
-### Example: Server Log Output
-
-A successful task execution produces log output like this:
-
-```
-2025-04-18 19:29:38,563 INFO a2a.server.methods: Task created feb82384-544d-4ba1-8b81-0f41e97c128a, scheduling background runner
-2025-04-18 19:29:39,564 DEBUG a2a.server.methods: Updating task feb82384-544d-4ba1-8b81-0f41e97c128a to working
-2025-04-18 19:29:39,564 DEBUG a2a.server.methods: Task feb82384-544d-4ba1-8b81-0f41e97c128a initial text: 'tell me a joke'
-2025-04-18 19:29:39,564 DEBUG a2a.server.methods: Adding artifact to task feb82384-544d-4ba1-8b81-0f41e97c128a: Echo: tell me a joke
-2025-04-18 19:29:39,565 DEBUG a2a.server.methods: Updating task feb82384-544d-4ba1-8b81-0f41e97c128a to completed
-2025-04-18 19:29:39,565 INFO a2a.server.methods: Background runner completed for task feb82384-544d-4ba1-8b81-0f41e97c128a
-```
-
-## Installation
+Then launch:
 
 ```bash
-# Install from source
+uvicorn a2a.server.__main__:main --config pirate_agent.yaml --log-level debug
+```
+
+The server will register your `pirate_agent` handler as default and stream back playful pirate responses:
+
+```bash
+# Create a task
+curl -N -X POST http://127.0.0.1:8000/rpc \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc":"2.0",
+    "id":1,
+    "method":"tasks/send",
+    "params":{
+      "id":"task-1234",
+      "message":{
+        "role":"user",
+        "parts":[{ "type":"text","text":"What be yer name, scallywag?" }]
+      }
+    }
+  }'
+
+# Stream events
+curl -N http://127.0.0.1:8000/events
+```
+
+### Example: Pirate Agent via Python Script
+
+Alternatively, spin up the pirate agent with a self-contained script:
+
+```python
+#!/usr/bin/env python3
+# examples/google_adk_pirate_agent.py
+"""
+A2A Google ADK Agent Server Example
+"""
+import argparse, logging, uvicorn
+from a2a.server.app import create_app
+from a2a.server.tasks.handlers.google_adk_handler import GoogleADKHandler
+from a2a.server.tasks.handlers.adk_agent_adapter import ADKAgentAdapter
+from a2a.server.logging import configure_logging
+from a2a.server.sample_agents.pirate_agent import pirate_agent as agent
+
+# Wrap raw ADK Agent and register
+adapter = ADKAgentAdapter(agent)
+handler = GoogleADKHandler(adapter, name=getattr(agent, 'name', 'pirate_agent'))
+
+# Create app with this handler only
+app = create_app(
+    use_handler_discovery=False,
+    custom_handlers=[handler],
+    default_handler=handler
+)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--host', default='127.0.0.1')
+    parser.add_argument('--port', type=int, default=8000)
+    parser.add_argument('--log-level', default='info')
+    args = parser.parse_args()
+
+    configure_logging(level_name=args.log_level)
+    logging.getLogger(__name__).info(
+        f"Starting Pirate Agent Server on http://{args.host}:{args.port}"
+    )
+    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+```
+
+## Handler Details
+
+- **`google_adk_handler`** now auto‑wraps raw ADK `Agent` instances via `ADKAgentAdapter` so `.invoke()`/`.stream()` always exist.
+- **`prepare_handler_params`** treats the `name` parameter as a literal, allowing YAML overrides without import errors.
+
+### Custom Handler Development
+
+Subclass `TaskHandler`, implement `process_task`, and register via:
+
+- **Automatic discovery** (`--handler-package`)  
+- **Entry points** in `setup.py` under `a2a.task_handlers`
+
+### Installation
+
+```bash
 git clone https://github.com/yourusername/a2a.git
 cd a2a
 pip install -e .
-
-# Install with custom handlers development mode
+# For development extras:
 pip install -e ".[dev]"
 ```
 
-## Requirements
+### Requirements
 
 - Python 3.9+
-- FastAPI
-- Uvicorn
+- FastAPI, Uvicorn
 - Pydantic v2+
-- WebSockets
+- HTTPX, WebSockets
 
-## Development
-
-### Adding a new Handler
-
-1. Create a new module in `a2a/server/tasks/handlers/`
-2. Subclass `TaskHandler` and implement required methods
-3. The handler will be automatically discovered
-
-Or create a separate package with entry points as described above.
-
-### Running Tests
+### Testing
 
 ```bash
 pytest
 ```
+
