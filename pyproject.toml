@@ -12,17 +12,33 @@ requires-python = ">=3.11"
 # runtime dependencies
 dependencies = [
   "asyncio>=3.4.3",
-  "fastapi>=0.115.12",
-  "google-adk>=0.2.0",
-  "httpx>=0.28.1",
-  "litellm>=1.66.3",
   "pydantic>=2.11.3",
-  "pyyaml>=6.0.2",
-  "uvicorn>=0.34.1",
 ]
 
-# dev‑tools for testing & codegen
+# optional feature sets
 [project.optional-dependencies]
+jsonrpc = [
+  "pydantic>=2.11.3",
+]
+server = [
+  "fastapi>=0.115.12",
+  "uvicorn>=0.34.1",
+  "httpx>=0.28.1",
+  "pyyaml>=6.0.2",
+]
+client = [
+  "httpx>=0.28.1",
+  "click>=8.0",
+  "pyyaml>=6.0.2",
+]
+adk = [
+  "google-adk>=0.2.0",
+  "litellm>=1.66.3",
+]
+full = [
+  "chuk-a2a[jsonrpc,server,client,adk]",
+]
+
 dev = [
   "pytest>=7.0.0",
   "pytest-asyncio>=0.20.0",
@@ -48,15 +64,8 @@ a2a-client = "a2a.client.cli:main"
 
 # pytest settings so it finds your src/ layout automatically
 [tool.pytest.ini_options]
-# where to look for tests
 testpaths   = ["tests"]
-
-# add src/ to PYTHONPATH so `import a2a` works
 pythonpath  = ["src"]
-
-# nicer output
 addopts     = "-v"
-
-# async ini_options
 asyncio_default_fixture_loop_scope = "function"
 asyncio_mode = "strict"

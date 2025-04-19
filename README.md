@@ -1,6 +1,6 @@
 # A2A: Agent-to-Agent Communication Server
 
-A lightweight, transport-agnostic server for agent-to-agent communication based on JSON-RPC.
+A lightweight, transport-agnostic framework for agent-to-agent communication based on JSON-RPC.
 
 ## Server
 
@@ -52,27 +52,6 @@ uv run a2a-server --handler-package my_custom_module.handlers
 
 # Disable automatic handler discovery
 uv run a2a-server --no-discovery
-```bash
-# Basic usage (HTTP, WS, SSE on port 8000)
-a2a-server
-
-# Specify host and port
-a2a-server --host 0.0.0.0 --port 8000
-
-# Enable detailed logging
-a2a-server --log-level debug
-
-# Run in stdio JSON-RPC mode
-a2a-server --stdio
-
-# List all available task handlers
-a2a-server --list-handlers
-
-# Register additional handler packages
-a2a-server --handler-package my_custom_module.handlers
-
-# Disable automatic handler discovery
-a2a-server --no-discovery
 ```
 
 ### Example: Pirate Agent via YAML
@@ -97,7 +76,7 @@ handlers:
 Then launch:
 
 ```bash
-uvicorn a2a.server.__main__:main --config pirate_agent.yaml --log-level debug
+uv run a2a-server --config pirate_agent.yaml --log-level debug
 ```
 
 The server will register your `pirate_agent` handler as default and stream back playful pirate responses:
@@ -179,24 +158,52 @@ Subclass `TaskHandler`, implement `process_task`, and register via:
 
 ### Installation
 
+Clone the repo and install the core library:
+
 ```bash
 git clone https://github.com/yourusername/a2a.git
 cd a2a
 pip install -e .
-# For development extras:
-pip install -e ".[dev]"
 ```
+
+Install optional extras as needed:
+
+```bash
+pip install -e ".[jsonrpc]"    # core JSON-RPC only
+pip install -e ".[server]"     # HTTP, WS, SSE server
+pip install -e ".[client]"     # CLI client
+pip install -e ".[adk]"        # Google ADK agent support
+pip install -e ".[full]"       # All features
+```
+
+After installation, run the server or client using `uv run`:
+
+```bash
+uv run a2a-server --host 0.0.0.0 --port 8000 --log-level info
+uv run a2a-client --help
+```bash
+git clone https://github.com/yourusername/a2a.git
+cd a2a
+pip install -e .
+```
+
+Install optional extras as needed:
+
+- **Core JSON-RPC only**: `pip install -e ".[jsonrpc]"`
+- **Server** (HTTP, WS, SSE): `pip install -e ".[server]"`
+- **Client CLI**: `pip install -e ".[client]"`
+- **Google ADK agent support**: `pip install -e ".[adk]"`
+- **All features**: `pip install -e ".[full]"`
 
 ### Requirements
 
 - Python 3.9+
-- FastAPI, Uvicorn
-- Pydantic v2+
-- HTTPX, WebSockets
+- HTTPX, WebSockets (for client)
+- FastAPI, Uvicorn (for server)
+- Pydantic v2+ (for JSON-RPC)
 
 ### Testing
 
 ```bash
 pytest
 ```
-

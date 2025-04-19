@@ -1,4 +1,4 @@
-# pirate_agent.yaml
+# agent.yaml
 server:
   port: 8000
 

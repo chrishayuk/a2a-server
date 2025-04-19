@@ -298,6 +298,26 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "asyncio" },
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+adk = [
+    { name = "google-adk" },
+    { name = "litellm" },
+]
+client = [
+    { name = "click" },
+    { name = "httpx" },
+    { name = "pyyaml" },
+]
+dev = [
+    { name = "datamodel-code-generator" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+full = [
+    { name = "click" },
     { name = "fastapi" },
     { name = "google-adk" },
     { name = "httpx" },
@@ -306,27 +326,34 @@ dependencies = [
     { name = "pyyaml" },
     { name = "uvicorn" },
 ]
-
-[package.optional-dependencies]
-dev = [
-    { name = "datamodel-code-generator" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
+jsonrpc = [
+    { name = "pydantic" },
+]
+server = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "pyyaml" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "asyncio", specifier = ">=3.4.3" },
+    { name = "chuk-a2a", extras = ["jsonrpc", "server", "client", "adk"], marker = "extra == 'full'" },
+    { name = "click", marker = "extra == 'client'", specifier = ">=8.0" },
     { name = "datamodel-code-generator", marker = "extra == 'dev'", specifier = ">=0.25.8" },
-    { name = "fastapi", specifier = ">=0.115.12" },
-    { name = "google-adk", specifier = ">=0.2.0" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "litellm", specifier = ">=1.66.3" },
+    { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.115.12" },
+    { name = "google-adk", marker = "extra == 'adk'", specifier = ">=0.2.0" },
+    { name = "httpx", marker = "extra == 'client'", specifier = ">=0.28.1" },
+    { name = "httpx", marker = "extra == 'server'", specifier = ">=0.28.1" },
+    { name = "litellm", marker = "extra == 'adk'", specifier = ">=1.66.3" },
     { name = "pydantic", specifier = ">=2.11.3" },
+    { name = "pydantic", marker = "extra == 'jsonrpc'", specifier = ">=2.11.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.20.0" },
-    { name = "pyyaml", specifier = ">=6.0.2" },
-    { name = "uvicorn", specifier = ">=0.34.1" },
+    { name = "pyyaml", marker = "extra == 'client'", specifier = ">=6.0.2" },
+    { name = "pyyaml", marker = "extra == 'server'", specifier = ">=6.0.2" },
+    { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.34.1" },
 ]
 
 [[package]]
