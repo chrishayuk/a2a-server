@@ -1,5 +1,3 @@
-# File: src/a2a/server/transport/sse.py
-
 import json
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse

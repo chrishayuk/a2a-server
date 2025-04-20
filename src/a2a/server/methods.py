@@ -14,7 +14,7 @@ from a2a.json_rpc.spec import (
     TaskState,
 )
 from a2a.json_rpc.protocol import JSONRPCProtocol
-from a2a.server.tasks.task_manager import TaskManager
+from a2a.server.tasks.task_manager import TaskManager, TaskNotFound
 
 # Configure module logger
 logger = logging.getLogger(__name__)
@@ -87,9 +87,13 @@ def register_methods(
         logger.info(f"Received RPC method {method}")
         logger.debug(f"Method params: {params}")
         q = TaskQueryParams.model_validate(params)
-        task = await manager.get_task(q.id)
-        logger.debug(f"Retrieved task {q.id}: state={task.status.state}")
+        try:
+            task = await manager.get_task(q.id)
+        except TaskNotFound as e:
+            # Task not found → raise a regular exception so JSON-RPC wraps it
+            raise Exception(f"TaskNotFound: {e}")
         
+        logger.debug(f"Retrieved task {q.id}: state={task.status.state}")
         result = Task.model_validate(task.model_dump()).model_dump(exclude_none=True, by_alias=True)
         logger.debug(f"tasks/get returning: {result}")
         return result

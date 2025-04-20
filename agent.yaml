@@ -24,7 +24,7 @@ handlers:
         pushNotifications: false
       authentication:
         schemes:
-          - "Bearer"
+          - "None"
       defaultInputModes:
         - "text/plain"
       defaultOutputModes:
@@ -57,7 +57,7 @@ handlers:
         pushNotifications: false
       authentication:
         schemes:
-          - "Bearer"
+          - "None"
       defaultInputModes:
         - "text/plain"
       defaultOutputModes:

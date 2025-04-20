@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # a2a/server/run.py
 """
-Simplified entry point for A2A server with YAML configuration support.
+Simplified entry point for A2A server with YAML configuration support and agent cards.
 """
 import argparse
 import pkgutil
@@ -148,10 +148,10 @@ def prepare_handler_params(
     params: Dict[str, Any] = {}
 
     for k, v in cfg.items():
-        if k == "type":
+        if k in ("type", "agent_card"):
             continue
         if k not in valid_params:
-            # skip unknown args (like 'agent_card')
+            # skip unknown args
             continue
         if k != "name" and isinstance(v, str):
             # try to import
@@ -228,6 +228,11 @@ def run_server():
         choices=["debug","info","warning","error","critical"],
         help="Override configured log level"
     )
+    parser.add_argument(
+        "--list-routes",
+        action="store_true",
+        help="List all registered routes after initialization"
+    )
     args = parser.parse_args()
 
     # Load & merge YAML config
@@ -249,7 +254,8 @@ def run_server():
     )
 
     # Instantiate handlers
-    custom_handlers, default_handler = setup_handlers(cfg["handlers"])
+    handlers_config = cfg["handlers"]
+    custom_handlers, default_handler = setup_handlers(handlers_config)
 
     # ── Promote the YAML‑specified default to the front ───────────────
     if default_handler:
@@ -259,11 +265,12 @@ def run_server():
     else:
         handlers_list = custom_handlers or None
 
-    # Create FastAPI app
+    # Create FastAPI app with handlers and their config
     app: FastAPI = create_app(
         handlers=handlers_list,
-        use_discovery=cfg["handlers"]["use_discovery"],
-        handler_packages=cfg["handlers"]["handler_packages"]
+        use_discovery=handlers_config["use_discovery"],
+        handler_packages=handlers_config["handler_packages"],
+        handlers_config=handlers_config
     )
 
     # Run

@@ -1,6 +1,6 @@
 # File: tests/server/test_methods.py
-
 import pytest
+import json
 from pydantic import ValidationError
 from a2a.json_rpc.protocol import JSONRPCProtocol
 from a2a.server.methods import register_methods
@@ -190,3 +190,153 @@ async def test_handler_selection(protocol_manager):
     get_result = await get_handler("tasks/get", {"id": task_id})
     assert get_result["status"]["state"] == TaskState.completed
     assert not get_result.get("artifacts")  # No artifacts with test handler
+
+
+# --- New tests for handler and agent card interactions ---
+
+@pytest.mark.asyncio
+async def test_handler_with_agent_card(protocol_manager):
+    """Test that a handler with an agent_card attribute is correctly handled."""
+    protocol, manager = protocol_manager
+    
+    # Create a handler with an attached agent_card
+    class CardHandler(EchoHandler):
+        @property
+        def name(self) -> str:
+            return "card_handler"
+        
+    # Create an instance and attach an agent_card attribute
+    card_handler = CardHandler()
+    agent_card = {
+        "name": "Card Test Handler",
+        "description": "Handler with an agent card",
+        "version": "1.0.0",
+        "authentication": {
+            "schemes": ["None"]
+        },
+        "skills": [
+            {
+                "id": "card-test",
+                "name": "Card Test",
+                "description": "Testing agent cards",
+                "tags": ["test", "cards"]
+            }
+        ]
+    }
+    setattr(card_handler, "agent_card", agent_card)
+    
+    # Register this handler
+    manager.register_handler(card_handler)
+    
+    # Create a task with this handler
+    send_res = await protocol._methods["tasks/send"](
+        "tasks/send",
+        {
+            "id": "ignored", 
+            "sessionId": None, 
+            "message": {"role": "user", "parts": [{"type": "text", "text": "Card Handler"}]},
+            "handler": "card_handler"  # Specify our card handler
+        }
+    )
+    
+    task_id = send_res["id"]
+    
+    # Wait for task to complete
+    import asyncio
+    await asyncio.sleep(1.5)
+    
+    # Verify it was processed
+    get_handler = protocol._methods["tasks/get"]
+    get_result = await get_handler("tasks/get", {"id": task_id})
+    assert get_result["status"]["state"] == TaskState.completed
+    
+    # Verify the agent card on the TaskManager
+    assert hasattr(card_handler, "agent_card")
+    assert card_handler.agent_card["name"] == "Card Test Handler"
+
+
+@pytest.mark.asyncio
+async def test_get_handlers_info(protocol_manager):
+    """Test that we can get information about all available handlers."""
+    _, manager = protocol_manager
+    
+    # Add a handler with an agent card
+    class InfoHandler(EchoHandler):
+        @property
+        def name(self) -> str:
+            return "info_handler"
+    
+    info_handler = InfoHandler()
+    setattr(info_handler, "agent_card", {
+        "name": "Info Handler",
+        "description": "Handler for info testing",
+        "version": "1.0.0",
+        "authentication": {"schemes": ["None"]}
+    })
+    
+    # Register handlers
+    manager.register_handler(info_handler)
+    
+    # Get all handlers
+    handlers = manager.get_handlers()
+    assert "echo" in handlers
+    assert "info_handler" in handlers
+    
+    # Get default handler
+    default = manager.get_default_handler()
+    assert default == "echo"
+
+
+@pytest.mark.asyncio
+async def test_multi_turn_with_handler_selection(protocol_manager):
+    """Test multi-turn conversation with explicit handler selection."""
+    protocol, manager = protocol_manager
+    
+    # First message
+    send_res = await protocol._methods["tasks/send"](
+        "tasks/send",
+        {
+            "id": "ignored", 
+            "sessionId": None, 
+            "message": {"role": "user", "parts": [{"type": "text", "text": "First message"}]},
+            "handler": "echo"  # Explicitly select echo handler
+        }
+    )
+    
+    task_id = send_res["id"]
+    session_id = send_res["sessionId"]
+    
+    # Wait for first turn to complete
+    import asyncio
+    await asyncio.sleep(1.5)
+    
+    # Second message in same session
+    send_res2 = await protocol._methods["tasks/send"](
+        "tasks/send",
+        {
+            "id": "ignored", 
+            "sessionId": session_id,  # Same session
+            "message": {"role": "user", "parts": [{"type": "text", "text": "Second message"}]},
+            "handler": "echo"  # Same handler
+        }
+    )
+    
+    task_id2 = send_res2["id"]
+    
+    # Wait for second turn to complete
+    await asyncio.sleep(1.5)
+    
+    # Verify both tasks completed
+    get_handler = protocol._methods["tasks/get"]
+    get_result1 = await get_handler("tasks/get", {"id": task_id})
+    get_result2 = await get_handler("tasks/get", {"id": task_id2})
+    
+    assert get_result1["status"]["state"] == TaskState.completed
+    assert get_result2["status"]["state"] == TaskState.completed
+    
+    # Same session ID for both tasks
+    assert get_result1["sessionId"] == get_result2["sessionId"]
+    
+    # Both should have echo artifacts
+    assert get_result1["artifacts"][0]["parts"][0]["text"] == "Echo: First message"
+    assert get_result2["artifacts"][0]["parts"][0]["text"] == "Echo: Second message"

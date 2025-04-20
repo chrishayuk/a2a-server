@@ -1,4 +1,3 @@
-# tests/server/transport/test_http.py
 import pytest
 from httpx import AsyncClient, ASGITransport
 
@@ -105,3 +104,84 @@ async def test_rpc_cancel_task():
         get_resp = await ac.post("/rpc", json=get_payload)
         status = get_resp.json()["result"]["status"]["state"]
         assert status == "canceled"
+
+# --- Additional HTTP transport tests ---
+
+@pytest.mark.asyncio
+async def test_handler_specific_rpc():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        # Send via specific handler endpoint (/echo/rpc)
+        send_payload = {
+            "jsonrpc": "2.0",
+            "id": 20,
+            "method": "tasks/send",
+            "params": {
+                "id": "ignored",
+                "sessionId": None,
+                "message": {
+                    "role": "user",
+                    "parts": [{"type": "text", "text": "Hello Echo"}]
+                }
+            }
+        }
+        send_resp = await ac.post("/echo/rpc", json=send_payload)
+        assert send_resp.status_code == 200
+        data = send_resp.json()
+        assert data["jsonrpc"] == "2.0"
+        assert data["id"] == 20
+        result = data["result"]
+        # EchoHandler should echo the input text
+        # Wait for completion artifact via SSE or subsequent get
+        # Here we at least verify the task is created under "echo"
+        assert result["status"]["state"] == "submitted"
+        assert result["id"]
+
+@pytest.mark.asyncio
+async def test_rpc_get_nonexistent_task():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        # Attempt to get a task ID that doesn't exist
+        fake_id = "00000000-0000-0000-0000-000000000000"
+        get_payload = {
+            "jsonrpc": "2.0",
+            "id": 30,
+            "method": "tasks/get",
+            "params": {"id": fake_id}
+        }
+        resp = await ac.post("/rpc", json=get_payload)
+        assert resp.status_code == 200
+        error = resp.json().get("error")
+        # Expect a JSON-RPC error for TaskNotFound
+        assert error is not None
+        assert "TaskNotFound" in error.get("message", "")
+
+@pytest.mark.asyncio
+async def test_send_subscribe_method():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        sub_payload = {
+            "jsonrpc": "2.0",
+            "id": 40,
+            "method": "tasks/sendSubscribe",
+            "params": {
+                "id": "ignored",
+                "sessionId": None,
+                "message": {
+                    "role": "user",
+                    "parts": [{"type": "text", "text": "Subscribe me"}]
+                }
+            }
+        }
+        sub_resp = await ac.post("/rpc", json=sub_payload)
+        assert sub_resp.status_code == 200
+        data = sub_resp.json()
+        assert data["jsonrpc"] == "2.0"
+        assert data["id"] == 40
+        assert "result" in data
+        res = data["result"]
+        assert res["status"]["state"] == "submitted"
+        # Clean up: cancel the subscribed task
+        task_id = res["id"]
+        cancel_payload = {"jsonrpc": "2.0", "id": 41, "method": "tasks/cancel", "params": {"id": task_id}}
+        await ac.post("/rpc", json=cancel_payload)

@@ -1,6 +1,6 @@
 # A2A: Agent-to-Agent Communication Server
 
-A lightweight, transport-agnostic framework for agent-to-agent communication based on JSON-RPC.
+A lightweight, transport-agnostic framework for agent-to-agent communication based on JSON-RPC, implementing the [A2A Protocol](https://github.com/a2a-proto/a2a-protocol).
 
 ## Server
 
@@ -34,6 +34,11 @@ The A2A server provides a flexible JSON-RPC interface for agent-to-agent communi
   - Default handler accessible at root paths (`/rpc`, `/ws`, `/events`)
   - Handler health checks at `/{handler_name}`
 
+- **A2A Protocol Compliant**:
+  - Agent Cards at `/.well-known/agent.json` and `/{handler_name}/.well-known/agent.json`
+  - Standard Task/Message/Artifact structure
+  - Streaming support
+
 ### Running the Server
 
 ```bash
@@ -62,23 +67,59 @@ uv run a2a-server --handler-package my_custom_module.handlers
 uv run a2a-server --no-discovery
 ```
 
-### Example: Pirate Agent via YAML
+### Example: Configuring Agents via YAML
 
-You can configure a custom Google ADK–based "pirate" agent entirely in YAML.  
-Create `agent.yaml`:
+You can configure multiple agents with their capabilities and agent cards in YAML:
 
 ```yaml
 server:
   port: 8000
 
 handlers:
-  use_discovery: false    # skip built-in echo handler
-  default: pirate_agent
+  use_discovery: false
+  default: chef_agent
 
   pirate_agent:
     type: a2a.server.tasks.handlers.google_adk_handler.GoogleADKHandler
     agent: a2a.server.sample_agents.pirate_agent.pirate_agent
     name: pirate_agent
+    agent_card:
+      name: Pirate Agent
+      description: "Converts your text into salty pirate‑speak"
+      url: "https://pirate.example.com"
+      version: "0.1.0"
+      documentationUrl: "https://pirate.example.com/docs"
+      provider:
+        organization: "Acme"
+        url: "https://acme.example.com"
+      capabilities:
+        streaming: true
+        pushNotifications: false
+      authentication:
+        schemes:
+          - "Bearer"
+      defaultInputModes:
+        - "text/plain"
+      defaultOutputModes:
+        - "text/plain"
+      skills:
+        - id: pirate-talk
+          name: Pirate Talk
+          description: "Turn any message into pirate lingo"
+          tags:
+            - pirate
+            - fun
+          examples:
+            - "Arrr! Give me yer loot!"
+
+  chef_agent:
+    type: a2a.server.tasks.handlers.google_adk_handler.GoogleADKHandler
+    agent: a2a.server.sample_agents.chef_agent.chef_agent
+    name: chef_agent
+    agent_card:
+      name: Chef Agent
+      description: "Suggests delicious recipes from your ingredients"
+      # Other fields can be automatically derived...
 ```
 
 Then launch:
@@ -87,7 +128,7 @@ Then launch:
 uv run a2a-server --config agent.yaml --log-level debug
 ```
 
-The server will register your `pirate_agent` handler as default and stream back playful pirate responses:
+### Interacting with the Server
 
 ```bash
 # Create a task with default handler
@@ -100,7 +141,7 @@ curl -N -X POST http://127.0.0.1:8000/rpc \
     "params":{
       "message":{
         "role":"user",
-        "parts":[{ "type":"text","text":"What be yer name, scallywag?" }]
+        "parts":[{ "type":"text","text":"What can I make with chicken?" }]
       }
     }
   }'
@@ -115,7 +156,7 @@ curl -N -X POST http://127.0.0.1:8000/pirate_agent/rpc \
     "params":{
       "message":{
         "role":"user",
-        "parts":[{ "type":"text","text":"What be yer name, scallywag?" }]
+        "parts":[{ "type":"text","text":"Tell me about the sea" }]
       }
     }
   }'
@@ -126,78 +167,14 @@ curl -N http://127.0.0.1:8000/events
 # Stream events from specific handler
 curl -N http://127.0.0.1:8000/pirate_agent/events
 
+# Get the default agent card (A2A Protocol compliant)
+curl http://127.0.0.1:8000/.well-known/agent.json
+
+# Get a specific handler's agent card
+curl http://127.0.0.1:8000/pirate_agent/.well-known/agent.json
+
 # Check handler health
 curl http://127.0.0.1:8000/pirate_agent
-```
-
-### Example: Multiple Agents via YAML
-
-You can configure multiple handlers and access them directly via their URLs:
-
-```yaml
-server:
-  port: 8000
-
-handlers:
-  use_discovery: false
-  default: chef_agent  # Default handler accessible at /rpc
-
-  pirate_agent:  # Accessible at /pirate_agent/rpc
-    type: a2a.server.tasks.handlers.google_adk_handler.GoogleADKHandler
-    agent: a2a.server.sample_agents.pirate_agent.pirate_agent
-    name: pirate_agent
-    
-  chef_agent:  # Accessible at /chef_agent/rpc
-    type: a2a.server.tasks.handlers.google_adk_handler.GoogleADKHandler
-    agent: a2a.server.sample_agents.chef_agent.chef_agent
-    name: chef_agent
-```
-
-### Example: Pirate Agent via Python Script
-
-Alternatively, spin up the pirate agent with a self-contained script:
-
-```python
-#!/usr/bin/env python3
-# examples/google_adk_pirate_agent.py
-"""
-A2A Google ADK Agent Server Example
-"""
-import logging
-import uvicorn
-from a2a.server.app import create_app
-from a2a.server.tasks.handlers.google_adk_handler import GoogleADKHandler
-from a2a.server.tasks.handlers.adk_agent_adapter import ADKAgentAdapter
-from a2a.server.logging import configure_logging
-from a2a.server.sample_agents.pirate_agent import pirate_agent as agent
-
-# Constants
-HOST = "0.0.0.0"
-PORT = 8000
-
-# Configure logging
-configure_logging(level_name="info")
-logger = logging.getLogger(__name__)
-
-
-def main():
-    # Wrap the ADK Agent and instantiate handler (defaults to agent.name)
-    adapter = ADKAgentAdapter(agent)
-    handler = GoogleADKHandler(adapter)
-
-    # Create FastAPI app with only this handler
-    app = create_app(
-        use_discovery=False,
-        handlers=[handler]
-    )
-
-    # Start server
-    logger.info(f"Starting A2A Pirate Agent Server on http://{HOST}:{PORT}")
-    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
-
-
-if __name__ == "__main__":
-    main()
 ```
 
 ## URL Structure
@@ -208,19 +185,37 @@ The server provides a consistent URL structure:
 - `/rpc` - JSON-RPC endpoint for the default handler
 - `/ws` - WebSocket endpoint for the default handler  
 - `/events` - SSE endpoint for the default handler
+- `/.well-known/agent.json` - Agent Card for the default handler (A2A Protocol compliant)
 
 ### Specific Handlers
 - `/{handler_name}/rpc` - JSON-RPC endpoint for a specific handler
 - `/{handler_name}/ws` - WebSocket endpoint for a specific handler
 - `/{handler_name}/events` - SSE endpoint for a specific handler
+- `/{handler_name}/.well-known/agent.json` - Agent Card for a specific handler (A2A Protocol compliant)
 
 ### Health Checks
 - `/` - Root health check with information about all handlers
 - `/{handler_name}` - Handler-specific health check
 
+## Agent Cards
+
+The server implements the A2A Protocol's Agent Card specification. Agent cards contain information about the agent's:
+
+- Name, description, and version
+- Provider information
+- Capabilities (streaming, push notifications)
+- Authentication requirements
+- Supported input/output modes
+- Skills (capabilities the agent can perform)
+
+Agent cards are generated from:
+1. YAML configuration in the `agent_card` section
+2. Dynamically detected capabilities (streaming support, etc.)
+3. Reasonable defaults for missing fields
+
 ## Handler Details
 
-- **`google_adk_handler`** now auto‑wraps raw ADK `Agent` instances via `ADKAgentAdapter` so `.invoke()`/`.stream()` always exist.
+- **`google_adk_handler`** wraps raw Google ADK `Agent` instances via `ADKAgentAdapter` so `.invoke()`/`.stream()` always exist.
 - **`prepare_handler_params`** treats the `name` parameter as a literal, allowing YAML overrides without import errors.
 
 ### Custom Handler Development

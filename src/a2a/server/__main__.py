@@ -4,9 +4,9 @@
 CLI entrypoint for a2a-server: supports HTTP/WS/SSE or stdio mode,
 optional YAML config, auto‑picks up agent.yaml if present.
 
-Uses explicit route registration for direct handler mounting:
-- /rpc, /ws, /events for the default handler
-- /{name}/rpc, /{name}/ws, /{name}/events for specific handlers
+Uses direct handler mounting and supports A2A protocol agent cards:
+- /.well-known/agent.json for the default handler
+- /{name}/.well-known/agent.json for specific handlers
 """
 import sys
 import os
@@ -120,11 +120,12 @@ def main():
                 print(out, flush=True)
         return
 
-    # Create the FastAPI application
+    # Create the FastAPI application with handlers_config
     app = create_app(
         handlers=custom_handlers if custom_handlers else None,
         use_discovery=use_disc,
-        handler_packages=args.handler_packages
+        handler_packages=args.handler_packages,
+        handlers_config=handlers_config
     )
 
     # Run the server
