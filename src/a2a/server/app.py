@@ -1,7 +1,10 @@
 # File: a2a/server/app.py
-from fastapi import FastAPI
+"""
+A2A server application factory with explicit route registration.
+"""
+from fastapi import FastAPI, Request
 import logging
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from a2a.json_rpc.protocol import JSONRPCProtocol
 from a2a.server.tasks.task_manager import TaskManager
@@ -21,57 +24,97 @@ def create_app(
     handler_packages: Optional[List[str]] = None
 ) -> FastAPI:
     """
-    Build the FastAPI app, register either your handlers or discover them.
-    - If `handlers` is given, the first is default, the rest non-default.
-    - Otherwise if `use_discovery`, auto‑discover.
-    - Else fall back to EchoHandler.
+    Build the FastAPI app with direct handler routing using explicit routes.
+    
+    Args:
+        handlers: Optional list of handlers to register (first is default)
+        use_discovery: Whether to auto-discover handlers
+        handler_packages: Optional packages to search for handlers
+        
+    Returns:
+        FastAPI application
     """
-    eb = EventBus()
-    mgr = TaskManager(eb)
-    proto = JSONRPCProtocol()
+    # Create core components
+    event_bus = EventBus()
+    task_manager = TaskManager(event_bus)
+    protocol = JSONRPCProtocol()
 
+    # Register handlers
     if handlers:
+        # Register provided handlers (first is default)
         default = handlers[0]
         for h in handlers:
             is_def = (h is default)
-            mgr.register_handler(h, default=is_def)
+            task_manager.register_handler(h, default=is_def)
             logger.debug(f"Registered handler: {h.name}{' (default)' if is_def else ''}")
         logger.info(f"Registered {len(handlers)} handler(s), default='{default.name}'")
-
     elif use_discovery:
+        # Use automatic discovery
         logger.info("Discovering handlers automatically")
-        register_discovered_handlers(mgr, packages=handler_packages)
-
+        register_discovered_handlers(task_manager, packages=handler_packages)
     else:
+        # Fallback to EchoHandler
         logger.info("No handlers → using EchoHandler fallback")
-        mgr.register_handler(EchoHandler(), default=True)
+        task_manager.register_handler(EchoHandler(), default=True)
 
     # JSON‑RPC wiring
-    register_methods(proto, mgr)
+    register_methods(protocol, task_manager)
     logger.debug("JSON-RPC methods registered")
 
+    # Create FastAPI app
     app = FastAPI(
         title="A2A Server",
         description="Agent-to-Agent JSON‑RPC over HTTP, WS, SSE",
     )
-    # Register transports
-    setup_http(app, proto)
-    setup_ws(app, proto, eb)
-    setup_sse(app, eb)
-    logger.debug("Transports configured (HTTP, WS, SSE)")
-
-    # Health check endpoint on each sub-app (both with and without trailing slash)
+    
+    # Add a root health check endpoint
     @app.get("/", include_in_schema=False)
-    async def _health():
-        """Return the RPC and SSE endpoints."""
-        return {"rpc": "/rpc", "events": "/events"}
-
-    @app.get("", include_in_schema=False)
-    async def _health_noslash():
-        """Alias health without trailing slash."""
-        return {"rpc": "/rpc", "events": "/events"}
+    async def health_check():
+        """Root health check endpoint."""
+        default_handler = task_manager.get_default_handler()
+        handlers = task_manager.get_handlers()
+        
+        return {
+            "status": "ok",
+            "default_handler": default_handler,
+            "handlers": handlers,
+            "api": {
+                "rpc": "/rpc",  # Default handler at root
+                "events": "/events",  # Default handler at root
+                "ws": "/ws",  # Default handler at root
+                "{handler}/rpc": "Specific handler RPC endpoint",
+                "{handler}/events": "Specific handler events endpoint",
+                "{handler}/ws": "Specific handler WebSocket endpoint"
+            }
+        }
+    
+    # Add health check endpoints for each handler first (before transport setup)
+    for handler_name in task_manager.get_handlers():
+        # Use a function to capture handler_name value properly
+        def create_health_endpoint(name):
+            @app.get(f"/{name}", include_in_schema=False)
+            async def handler_health():
+                """Handler-specific health check."""
+                return {
+                    "handler": name,
+                    "endpoints": {
+                        "rpc": f"/{name}/rpc",
+                        "events": f"/{name}/events",
+                        "ws": f"/{name}/ws"
+                    }
+                }
+            return handler_health
+        
+        # Create and add the endpoint
+        create_health_endpoint(handler_name)
+    
+    # Register transports with explicit endpoint registration for each handler
+    setup_http(app, protocol, task_manager)
+    setup_ws(app, protocol, event_bus, task_manager)
+    setup_sse(app, event_bus, task_manager)
+    logger.debug("Transports configured with direct handler mounting")
 
     return app
 
-# default app (only EchoHandler)
+# Default app (only EchoHandler)
 app = create_app()

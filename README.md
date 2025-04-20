@@ -28,6 +28,11 @@ The A2A server provides a flexible JSON-RPC interface for agent-to-agent communi
   - Automatic handler discovery
   - Plugin system via entry points (`a2a.task_handlers`)
   - Custom handler development via subclassing `TaskHandler`
+  
+- **Intuitive URL Structure**:
+  - Direct handler mounting at `/{handler_name}/rpc`, `/{handler_name}/ws`, and `/{handler_name}/events`
+  - Default handler accessible at root paths (`/rpc`, `/ws`, `/events`)
+  - Handler health checks at `/{handler_name}`
 
 ### Running the Server
 
@@ -46,6 +51,9 @@ uv run a2a-server --stdio
 
 # List all available task handlers
 uv run a2a-server --list-handlers
+
+# List all registered routes (useful for debugging)
+uv run a2a-server --list-routes
 
 # Register additional handler packages
 uv run a2a-server --handler-package my_custom_module.handlers
@@ -76,13 +84,13 @@ handlers:
 Then launch:
 
 ```bash
-uv run a2a-server --config pirate_agent.yaml --log-level debug
+uv run a2a-server --config agent.yaml --log-level debug
 ```
 
 The server will register your `pirate_agent` handler as default and stream back playful pirate responses:
 
 ```bash
-# Create a task
+# Create a task with default handler
 curl -N -X POST http://127.0.0.1:8000/rpc \
   -H 'Content-Type: application/json' \
   -d '{
@@ -90,7 +98,6 @@ curl -N -X POST http://127.0.0.1:8000/rpc \
     "id":1,
     "method":"tasks/send",
     "params":{
-      "id":"task-1234",
       "message":{
         "role":"user",
         "parts":[{ "type":"text","text":"What be yer name, scallywag?" }]
@@ -98,8 +105,52 @@ curl -N -X POST http://127.0.0.1:8000/rpc \
     }
   }'
 
-# Stream events
+# Create a task with specific handler
+curl -N -X POST http://127.0.0.1:8000/pirate_agent/rpc \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc":"2.0",
+    "id":1,
+    "method":"tasks/send",
+    "params":{
+      "message":{
+        "role":"user",
+        "parts":[{ "type":"text","text":"What be yer name, scallywag?" }]
+      }
+    }
+  }'
+
+# Stream events from default handler
 curl -N http://127.0.0.1:8000/events
+
+# Stream events from specific handler
+curl -N http://127.0.0.1:8000/pirate_agent/events
+
+# Check handler health
+curl http://127.0.0.1:8000/pirate_agent
+```
+
+### Example: Multiple Agents via YAML
+
+You can configure multiple handlers and access them directly via their URLs:
+
+```yaml
+server:
+  port: 8000
+
+handlers:
+  use_discovery: false
+  default: chef_agent  # Default handler accessible at /rpc
+
+  pirate_agent:  # Accessible at /pirate_agent/rpc
+    type: a2a.server.tasks.handlers.google_adk_handler.GoogleADKHandler
+    agent: a2a.server.sample_agents.pirate_agent.pirate_agent
+    name: pirate_agent
+    
+  chef_agent:  # Accessible at /chef_agent/rpc
+    type: a2a.server.tasks.handlers.google_adk_handler.GoogleADKHandler
+    agent: a2a.server.sample_agents.chef_agent.chef_agent
+    name: chef_agent
 ```
 
 ### Example: Pirate Agent via Python Script
@@ -136,9 +187,8 @@ def main():
 
     # Create FastAPI app with only this handler
     app = create_app(
-        use_handler_discovery=False,
-        custom_handlers=[handler],
-        default_handler=handler
+        use_discovery=False,
+        handlers=[handler]
     )
 
     # Start server
@@ -149,6 +199,24 @@ def main():
 if __name__ == "__main__":
     main()
 ```
+
+## URL Structure
+
+The server provides a consistent URL structure:
+
+### Default Handler
+- `/rpc` - JSON-RPC endpoint for the default handler
+- `/ws` - WebSocket endpoint for the default handler  
+- `/events` - SSE endpoint for the default handler
+
+### Specific Handlers
+- `/{handler_name}/rpc` - JSON-RPC endpoint for a specific handler
+- `/{handler_name}/ws` - WebSocket endpoint for a specific handler
+- `/{handler_name}/events` - SSE endpoint for a specific handler
+
+### Health Checks
+- `/` - Root health check with information about all handlers
+- `/{handler_name}` - Handler-specific health check
 
 ## Handler Details
 
@@ -201,4 +269,3 @@ uv run a2a-client --help
 ```bash
 pytest
 ```
-

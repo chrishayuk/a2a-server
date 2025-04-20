@@ -1,9 +1,12 @@
 # File: src/a2a/server/task_manager.py
-
+"""
+Enhanced TaskManager with handler retrieval methods.
+"""
 import asyncio
 from datetime import datetime, timezone
 from uuid import uuid4
 import logging
+from typing import Dict, List, Optional, Any, AsyncIterable
 
 from a2a.json_rpc.spec import (
     Message,
@@ -17,7 +20,7 @@ from a2a.json_rpc.spec import (
     TextPart,
 )
 from a2a.server.pubsub import EventBus
-from a2a.server.tasks.task_handler_registry import TaskHandlerRegistry
+from a2a.server.tasks.task_handler import TaskHandler
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +35,7 @@ class TaskManager:
     Manages A2A tasks and delegates processing to registered handlers.
     """
 
-    _valid_transitions: dict[TaskState, list[TaskState]] = {
+    _valid_transitions: Dict[TaskState, List[TaskState]] = {
         TaskState.submitted: [
             TaskState.working,
             TaskState.completed,
@@ -51,18 +54,58 @@ class TaskManager:
         TaskState.failed: [TaskState.failed],
     }
 
-    def __init__(self, event_bus: EventBus | None = None) -> None:
-        self._tasks: dict[str, Task] = {}
+    def __init__(self, event_bus: Optional[EventBus] = None) -> None:
+        self._tasks: Dict[str, Task] = {}
         self._lock = asyncio.Lock()
         self._event_bus = event_bus
-        self._handler_registry = TaskHandlerRegistry()
-        self._active_tasks = {}  # Map of task_id -> handler name
+        self._handler_registry: Dict[str, TaskHandler] = {}
+        self._default_handler: Optional[str] = None
+        self._active_tasks: Dict[str, str] = {}  # Map of task_id -> handler name
         # Keep track of active background tasks
         self._background_tasks = set()
 
-    def register_handler(self, handler, default: bool = False) -> None:
+    def register_handler(self, handler: TaskHandler, default: bool = False) -> None:
         """Register a task handler with this manager."""
-        self._handler_registry.register(handler, default)
+        name = handler.name
+        self._handler_registry[name] = handler
+        if default or self._default_handler is None:
+            self._default_handler = name
+            logger.debug(f"Registered default handler: {name}")
+        else:
+            logger.debug(f"Registered handler: {name}")
+
+    def get_handler(self, name: Optional[str] = None) -> TaskHandler:
+        """
+        Get a handler by name, or the default if name is None.
+        
+        Args:
+            name: Optional handler name
+            
+        Returns:
+            The requested handler
+            
+        Raises:
+            KeyError: If the handler doesn't exist
+        """
+        if name is None:
+            if self._default_handler is None:
+                raise ValueError("No default handler registered")
+            return self._handler_registry[self._default_handler]
+        
+        return self._handler_registry[name]
+
+    def get_handlers(self) -> Dict[str, str]:
+        """
+        Get all registered handler names.
+        
+        Returns:
+            Dictionary of handler_name -> handler_display_name
+        """
+        return {name: name for name in self._handler_registry.keys()}
+
+    def get_default_handler(self) -> Optional[str]:
+        """Get the name of the default handler."""
+        return self._default_handler
 
     def _register_task(self, task):
         """Register a background task for cleanup."""
@@ -78,8 +121,8 @@ class TaskManager:
     async def create_task(
         self, 
         user_msg: Message, 
-        session_id: str | None = None,
-        handler_name: str | None = None
+        session_id: Optional[str] = None,
+        handler_name: Optional[str] = None
     ) -> Task:
         """Create a task and select appropriate handler."""
         async with self._lock:
@@ -87,14 +130,14 @@ class TaskManager:
             sess_id = session_id or str(uuid4())
             task = Task(
                 id=task_id,
-                session_id=sess_id,  # Use snake_case as defined in the model
+                session_id=sess_id,
                 status=TaskStatus(state=TaskState.submitted),
                 history=[user_msg],
             )
             self._tasks[task_id] = task
             
             # Select handler and remember which one we used
-            handler = self._handler_registry.get(handler_name)
+            handler = self.get_handler(handler_name)
             self._active_tasks[task_id] = handler.name
 
         if self._event_bus:
@@ -120,7 +163,7 @@ class TaskManager:
         self,
         task_id: str,
         new_state: TaskState,
-        message: Message | None = None,
+        message: Optional[Message] = None,
     ) -> Task:
         async with self._lock:
             task = await self.get_task(task_id)
@@ -159,11 +202,11 @@ class TaskManager:
             )
         return task
 
-    async def cancel_task(self, task_id: str, reason: str | None = None) -> Task:
+    async def cancel_task(self, task_id: str, reason: Optional[str] = None) -> Task:
         # Try to cancel via the handler first
         handler_name = self._active_tasks.get(task_id)
         if handler_name:
-            handler = self._handler_registry.get(handler_name)
+            handler = self.get_handler(handler_name)
             success = await handler.cancel_task(task_id)
             if success:
                 # Create a cancellation message
@@ -177,15 +220,15 @@ class TaskManager:
         cancel_msg = Message(role=Role.agent, parts=[cancel_part])
         return await self.update_status(task_id, TaskState.canceled, cancel_msg)
 
-    def tasks_by_state(self, state: TaskState) -> list[Task]:
+    def tasks_by_state(self, state: TaskState) -> List[Task]:
         return [t for t in self._tasks.values() if t.status.state == state]
         
     async def _process_task(
         self, 
         task_id: str, 
-        handler,
+        handler: TaskHandler,
         message: Message,
-        session_id: str | None
+        session_id: Optional[str]
     ) -> None:
         """Process a task by delegating to the selected handler."""
         try:

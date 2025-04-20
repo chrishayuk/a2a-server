@@ -1,6 +1,10 @@
 # File: a2a/server/methods.py
+"""
+JSON-RPC method implementations for the A2A server.
+"""
 import asyncio
 import logging
+from typing import Optional, Dict, Any
 
 from a2a.json_rpc.spec import (
     TaskSendParams,
@@ -55,14 +59,23 @@ def register_methods(
     Register JSON-RPC methods for task operations.
     """
     @protocol.method("tasks/send")
-    async def _send(method: str, params: dict) -> dict:
+    async def _send(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Received RPC method {method}")
         logger.debug(f"Method params: {params}")
         p = TaskSendParams.model_validate(params)
         
-        # Create task with the default handler
-        task = await manager.create_task(p.message, session_id=p.session_id)
-        logger.info(f"Created task {task.id} via {method}")
+        # Get the handler name if provided in params
+        handler_name = params.get("handler")
+        
+        # Create task with the specified handler or default
+        task = await manager.create_task(
+            p.message, 
+            session_id=p.session_id,
+            handler_name=handler_name
+        )
+        
+        handler_info = f" using handler '{handler_name}'" if handler_name else ""
+        logger.info(f"Created task {task.id} via {method}{handler_info}")
         
         # Return using alias keys
         result = Task.model_validate(task.model_dump()).model_dump(exclude_none=True, by_alias=True)
@@ -70,7 +83,7 @@ def register_methods(
         return result
 
     @protocol.method("tasks/get")
-    async def _get(method: str, params: dict) -> dict:
+    async def _get(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Received RPC method {method}")
         logger.debug(f"Method params: {params}")
         q = TaskQueryParams.model_validate(params)
@@ -82,7 +95,7 @@ def register_methods(
         return result
 
     @protocol.method("tasks/cancel")
-    async def _cancel(method: str, params: dict) -> None:
+    async def _cancel(method: str, params: Dict[str, Any]) -> None:
         logger.info(f"Received RPC method {method}")
         logger.debug(f"Method params: {params}")
         iid = TaskIdParams.model_validate(params)
@@ -91,16 +104,22 @@ def register_methods(
         return None
 
     @protocol.method("tasks/sendSubscribe")
-    async def _send_subscribe(method: str, params: dict) -> dict:
+    async def _send_subscribe(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Received RPC method {method}")
         logger.debug(f"Method params: {params}")
         p = TaskSendParams.model_validate(params)
         
-        # Create task with specified or default handler
-        handler_name = params.get("handler")  # Optional handler selection
-        handler_info = f" using handler '{handler_name}'" if handler_name else ""
+        # Get the handler name if provided in params
+        handler_name = params.get("handler")
         
-        task = await manager.create_task(p.message, session_id=p.session_id, handler_name=handler_name)
+        # Create task with specified or default handler
+        task = await manager.create_task(
+            p.message, 
+            session_id=p.session_id, 
+            handler_name=handler_name
+        )
+        
+        handler_info = f" using handler '{handler_name}'" if handler_name else ""
         logger.info(f"Created task {task.id} via {method}{handler_info}")
         
         result = Task.model_validate(task.model_dump()).model_dump(exclude_none=True, by_alias=True)
@@ -108,7 +127,7 @@ def register_methods(
         return result
 
     @protocol.method("tasks/resubscribe")
-    async def _resubscribe(method: str, params: dict) -> None:
+    async def _resubscribe(method: str, params: Dict[str, Any]) -> None:
         # no-op: the SSE sidecar handles resubscribe by replaying events
         logger.info(f"Received RPC method {method} (resubscribe)")
         logger.debug(f"Resubscribe params: {params}")
