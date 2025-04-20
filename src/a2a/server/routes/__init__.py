@@ -1,1 +1,1 @@
-# File: src/a2a/routes/__init__.py
+# File: a2a/server/routes/__init__.py

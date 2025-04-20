@@ -1,14 +1,12 @@
 # File: a2a/server/app.py
-
 import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# a2a imports
-import a2a.server.debug_events as debug_events
-from a2a.server.flow_diagnosis import apply_flow_tracing
+import a2a.server.diagnosis.debug_events as debug_events
+from a2a.server.diagnosis.flow_diagnosis import apply_flow_tracing
 from a2a.server.pubsub import EventBus
 from a2a.server.tasks.discovery import register_discovered_handlers
 from a2a.server.tasks.handlers.echo_handler import EchoHandler
@@ -48,17 +46,16 @@ def create_app(
 
     # ── Event bus & optional tracing ────────────────────────────────────
     event_bus = EventBus()
+    monitor_coro = None
     if enable_flow_diagnosis:
         logger.info("Enabling flow diagnostics")
         debug_events.enable_debug()
         event_bus = debug_events.add_event_tracing(event_bus)
-        # apply tracing to transports
-        apply_flow_tracing(
-            None,
-            __import__("a2a.server.transport.http"),
-            __import__("a2a.server.transport.sse"),
-            event_bus,
-        )
+
+        # apply tracing to HTTP, SSE & get monitor coroutine
+        http_mod = __import__("a2a.server.transport.http", fromlist=["setup_http"])
+        sse_mod = __import__("a2a.server.transport.sse", fromlist=["setup_sse"])
+        monitor_coro = apply_flow_tracing(None, http_mod, sse_mod, event_bus)
 
     # ── Task manager & protocol ────────────────────────────────────────
     task_manager = TaskManager(event_bus)
@@ -72,11 +69,8 @@ def create_app(
         default = handlers[0]
         for h in handlers:
             task_manager.register_handler(h, default=(h is default))
-            logger.info(
-                "Registered handler %s%s",
-                h.name,
-                " (default)" if h is default else "",
-            )
+            logger.info("Registered handler %s%s",
+                        h.name, " (default)" if h is default else "")
     elif use_discovery:
         logger.info("Using discovery for handlers in %s", handler_packages)
         register_discovered_handlers(task_manager, packages=handler_packages)
@@ -108,7 +102,7 @@ def create_app(
         allow_credentials=True,
     )
 
-    # stash key objects for route modules to pick up
+    # stash for route modules & hooks
     app.state.handlers_config = handlers_config or {}
     app.state.event_bus = event_bus
     app.state.task_manager = task_manager
@@ -122,6 +116,24 @@ def create_app(
     setup_http(app, protocol, task_manager, event_bus)
     setup_ws(app, protocol, event_bus, task_manager)
     setup_sse(app, event_bus, task_manager)
+
+    # ── Startup/shutdown for our monitor ───────────────────────────────
+    if monitor_coro:
+        import asyncio
+
+        @app.on_event("startup")
+        async def _start_monitor():
+            app.state._monitor_task = asyncio.create_task(monitor_coro())
+
+        @app.on_event("shutdown")
+        async def _stop_monitor():
+            t = getattr(app.state, "_monitor_task", None)
+            if t:
+                t.cancel()
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
 
     # ── Mount modular routes ───────────────────────────────────────────
     if enable_flow_diagnosis:

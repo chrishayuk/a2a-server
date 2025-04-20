@@ -1,1 +1,1 @@
-# File: src/a2a/sample_agents/__init__.py
+# File: a2a/server/sample_agents/__init__.py
