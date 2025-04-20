@@ -1,7 +1,4 @@
-# File: a2a/server/debug_events.py
-"""
-Enhanced debugging module for A2A server.
-"""
+# File: a2a/server/diagnosis/debug_events.py
 import asyncio
 import json
 import logging
@@ -75,18 +72,21 @@ def add_event_tracing(event_bus):
     
     return event_bus
 
+
+
 def trace_task_manager(task_manager):
     """Enhance TaskManager with detailed tracing."""
-    # Only trace create_task, which is a coroutine, not _process_task (which is an async generator)
     original_create_task = task_manager.create_task
     
     @wraps(original_create_task)
-    async def traced_create_task(message, session_id=None, handler_name=None):
+    async def traced_create_task(*args, **kwargs):
         logger = logging.getLogger('a2a.server.tasks.task_manager')
-        logger.debug(f"Creating task with handler: {handler_name}")
+        # Log the handler name if provided
+        handler = kwargs.get('handler_name') or kwargs.get('handler')
+        logger.debug(f"Creating task with handler: {handler}")
         
         try:
-            task = await original_create_task(message, session_id, handler_name)
+            task = await original_create_task(*args, **kwargs)
             logger.debug(f"Task created: {task.id}")
             return task
         except Exception as e:
@@ -101,6 +101,7 @@ def trace_task_manager(task_manager):
     
     return task_manager
 
+
 # Function to trace handler processing
 def trace_handler_methods(handler):
     """Add tracing to handler methods."""
@@ -108,7 +109,7 @@ def trace_handler_methods(handler):
     
     @wraps(original_process_task)
     async def traced_process_task(task_id, message, session_id=None):
-        logger = logging.getLogger(f"a2a.server.tasks.handlers.{handler.name}")
+        logger = logging.getLogger(f'a2a.server.tasks.handlers.{handler.name}')
         logger.debug(f"Handler {handler.name} processing task {task_id}")
         
         # We can't use traditional tracing for async generators
@@ -128,6 +129,7 @@ def trace_handler_methods(handler):
     handler.process_task = traced_process_task
     
     return handler
+
 
 # Function to verify handler registration
 def verify_handlers(task_manager):

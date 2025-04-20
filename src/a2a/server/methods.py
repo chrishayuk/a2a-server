@@ -1,17 +1,16 @@
-# File: a2a/server/methods.py
+# a2a/server/methods.py
 """
 JSON-RPC method implementations for the A2A server.
 """
 import asyncio
 import logging
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 
 from a2a.json_rpc.spec import (
     TaskSendParams,
     TaskQueryParams,
     TaskIdParams,
     Task,
-    TaskState,
 )
 from a2a.json_rpc.protocol import JSONRPCProtocol
 from a2a.server.tasks.task_manager import TaskManager, TaskNotFound
@@ -22,32 +21,31 @@ logger = logging.getLogger(__name__)
 # Keep track of active background tasks
 _background_tasks = set()
 
+
 def _register_task(task):
     """Register a background task for cleanup."""
     _background_tasks.add(task)
-    
-    # Set up removal when the task is done
+
     def _clean_task(t):
         _background_tasks.discard(t)
     task.add_done_callback(_clean_task)
-    
+
     return task
+
 
 async def cancel_pending_tasks():
     """Cancel all pending background tasks and wait for them to complete."""
     tasks = list(_background_tasks)
     num_tasks = len(tasks)
-    
+
     if num_tasks > 0:
         logger.info(f"Cancelling {num_tasks} pending tasks")
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        
-        # Wait for all tasks to complete cancellation
+        for t in tasks:
+            if not t.done():
+                t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         logger.debug("All tasks cancelled successfully")
-    
+
     _background_tasks.clear()
 
 
@@ -58,6 +56,7 @@ def register_methods(
     """
     Register JSON-RPC methods for task operations.
     """
+
     @protocol.method("tasks/get")
     async def _get(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Received RPC method {method}")
@@ -66,11 +65,13 @@ def register_methods(
         try:
             task = await manager.get_task(q.id)
         except TaskNotFound as e:
-            # Task not found → raise a regular exception so JSON-RPC wraps it
+            # Task not found → raise so JSON‑RPC wraps it
             raise Exception(f"TaskNotFound: {e}")
-        
+
         logger.debug(f"Retrieved task {q.id}: state={task.status.state}")
-        result = Task.model_validate(task.model_dump()).model_dump(exclude_none=True, by_alias=True)
+        result = Task.model_validate(task.model_dump()).model_dump(
+            exclude_none=True, by_alias=True
+        )
         logger.debug(f"tasks/get returning: {result}")
         return result
 
@@ -83,34 +84,29 @@ def register_methods(
         logger.info(f"Task {iid.id} canceled via RPC")
         return None
 
-    # File: a2a/server/methods.py
-# Modify the tasks/send and tasks/sendSubscribe methods:
-
     @protocol.method("tasks/send")
     async def _send(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Received RPC method {method}")
         logger.debug(f"Method params: {params}")
         p = TaskSendParams.model_validate(params)
-        
-        # Get the handler name if provided in params
+
         handler_name = params.get("handler")
-        
-        # Extract client task ID if provided in params
         client_task_id = params.get("id")
-        
-        # Create task with the specified handler or default
+
+        # pass client_task_id via the correct keyword `task_id`
         task = await manager.create_task(
-            p.message, 
+            p.message,
             session_id=p.session_id,
             handler_name=handler_name,
-            task_id=client_task_id  # Pass client ID if provided
+            task_id=client_task_id,
         )
-        
+
         handler_info = f" using handler '{handler_name}'" if handler_name else ""
         logger.info(f"Created task {task.id} via {method}{handler_info}")
-        
-        # Return using alias keys
-        result = Task.model_validate(task.model_dump()).model_dump(exclude_none=True, by_alias=True)
+
+        result = Task.model_validate(task.model_dump()).model_dump(
+            exclude_none=True, by_alias=True
+        )
         logger.debug(f"tasks/send returning: {result}")
         return result
 
@@ -119,34 +115,39 @@ def register_methods(
         logger.info(f"Received RPC method {method}")
         logger.debug(f"Method params: {params}")
         p = TaskSendParams.model_validate(params)
-        
-        # Get the handler name if provided in params
+
         handler_name = params.get("handler")
-        
-        # Extract client task ID if provided in params
         client_task_id = params.get("id")
-        
-        # Create task with specified or default handler
-        task = await manager.create_task(
-            p.message, 
-            session_id=p.session_id, 
-            handler_name=handler_name,
-            task_id=client_task_id  # Pass client ID if provided
+
+        # attempt to create new task, or reuse existing
+        try:
+            task = await manager.create_task(
+                p.message,
+                session_id=p.session_id,
+                handler_name=handler_name,
+                task_id=client_task_id,
+            )
+            logger.info(f"Created task {task.id} via {method}")
+        except ValueError as e:
+            # if task already exists, fetch it
+            if "already exists" in str(e):
+                task = await manager.get_task(client_task_id)
+                logger.info(f"Reusing existing task {task.id} via {method}")
+            else:
+                raise
+
+        result = Task.model_validate(task.model_dump()).model_dump(
+            exclude_none=True, by_alias=True
         )
-        
-        handler_info = f" using handler '{handler_name}'" if handler_name else ""
-        logger.info(f"Created task {task.id} via {method}{handler_info}")
-        
-        result = Task.model_validate(task.model_dump()).model_dump(exclude_none=True, by_alias=True)
         logger.debug(f"tasks/sendSubscribe returning: {result}")
         return result
 
     @protocol.method("tasks/resubscribe")
     async def _resubscribe(method: str, params: Dict[str, Any]) -> None:
-        # no-op: the SSE sidecar handles resubscribe by replaying events
+        # SSE transport handles replay; RPC method is a no-op
         logger.info(f"Received RPC method {method} (resubscribe)")
         logger.debug(f"Resubscribe params: {params}")
         return None
-        
-    # Add a cleanup method to the protocol
+
+    # Attach the cleanup helper so the server can await any in‑flight calls
     protocol.cancel_pending_tasks = cancel_pending_tasks

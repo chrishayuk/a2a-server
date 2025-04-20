@@ -1,10 +1,12 @@
-"""a2a.server.tasks.task_manager
+# File: a2a/server/tasks/task_manager.py
+"""
+a2a.server.tasks.task_manager
 ================================
 Canonical TaskManager used by all transports.
 
 Key guarantees
 --------------
-* Accepts **`task_id`** kwarg so transports never need to guess.
+* Accepts **`task_id`** or **`id`** kwarg so transports never need to guess.
 * Keeps an **alias map** so both server‑generated and client‑provided IDs work.
 * Publishes initial *submitted* status immediately via `EventBus`.
 * Provides **legacy helpers** `get_handler`, `get_handlers`, `get_default_handler`.
@@ -42,36 +44,27 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Exceptions
-# ---------------------------------------------------------------------------
 
 class TaskNotFound(Exception):
     """Raised when the requested task ID is unknown."""
 
+
 class InvalidTransition(Exception):
     """Raised on an illegal FSM transition."""
 
-# ---------------------------------------------------------------------------
-# Implementation
-# ---------------------------------------------------------------------------
 
 class TaskManager:  # pylint: disable=too-many-instance-attributes
     """Central task registry and orchestrator for the A2A server."""
 
     _TRANSITIONS: Dict[TaskState, List[TaskState]] = {
-        TaskState.submitted: [TaskState.working, TaskState.completed, TaskState.canceled, TaskState.failed],
-        TaskState.working: [TaskState.input_required, TaskState.completed, TaskState.canceled, TaskState.failed],
-        TaskState.input_required: [TaskState.working, TaskState.canceled],
-        TaskState.completed: [],
-        TaskState.canceled: [],
-        TaskState.failed: [],
-        TaskState.unknown: list(TaskState),  # allow recovery/import
+        TaskState.submitted:     [TaskState.working, TaskState.completed, TaskState.canceled, TaskState.failed],
+        TaskState.working:       [TaskState.input_required, TaskState.completed, TaskState.canceled, TaskState.failed],
+        TaskState.input_required:[TaskState.working, TaskState.canceled],
+        TaskState.completed:     [],
+        TaskState.canceled:      [],
+        TaskState.failed:        [],
+        TaskState.unknown:       list(TaskState),
     }
-
-    # ------------------------------------------------------------------
-    # Construction / handler registry
-    # ------------------------------------------------------------------
 
     def __init__(self, event_bus: EventBus | None = None) -> None:
         self._bus = event_bus
@@ -80,34 +73,18 @@ class TaskManager:  # pylint: disable=too-many-instance-attributes
         self._handlers: Dict[str, TaskHandler] = {}
         self._default_handler: str | None = None
         self._active: Dict[str, str] = {}            # task_id → handler_name
-
-        # legacy name so older code can still poke internals safely
-        self._active_tasks: Dict[str, str] = self._active  # type: ignore[assignment]
+        self._active_tasks: Dict[str, str] = self._active  # legacy alias
 
         self._lock = asyncio.Lock()
         self._background: set[asyncio.Task[Any]] = set()
 
-    # -------------------- handler helpers ---------------------------
+    # ─── handler registry ───────────────────────────────────────────────
 
-    def register_handler(self, handler: TaskHandler, *, default: bool = False) -> None:  # noqa: D401
-        """Add *handler* to the registry; mark as default if requested."""
+    def register_handler(self, handler: TaskHandler, *, default: bool = False) -> None:
         self._handlers[handler.name] = handler
         if default or self._default_handler is None:
             self._default_handler = handler.name
         logger.debug("Registered handler %s%s", handler.name, " (default)" if default else "")
-
-    # ---- legacy public accessors ----------------------------------
-
-    def get_handler(self, name: str | None = None) -> TaskHandler:  # noqa: D401
-        return self._resolve_handler(name)
-
-    def get_handlers(self) -> Dict[str, str]:  # noqa: D401
-        return {n: n for n in self._handlers}
-
-    def get_default_handler(self) -> str | None:  # noqa: D401
-        return self._default_handler
-
-    # ---- internal --------------------------------------------------
 
     def _resolve_handler(self, name: str | None) -> TaskHandler:
         if name is None:
@@ -116,17 +93,16 @@ class TaskManager:  # pylint: disable=too-many-instance-attributes
             return self._handlers[self._default_handler]
         return self._handlers[name]
 
-    # ------------------------------------------------------------------
-    # FSM helpers
-    # ------------------------------------------------------------------
+    def get_handler(self, name: str | None = None) -> TaskHandler:
+        return self._resolve_handler(name)
 
-    @staticmethod
-    def _terminal(state: TaskState) -> bool:
-        return state in (TaskState.completed, TaskState.canceled, TaskState.failed)
+    def get_handlers(self) -> Dict[str, str]:
+        return {n: n for n in self._handlers}
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    def get_default_handler(self) -> str | None:
+        return self._default_handler
+
+    # ─── public API ────────────────────────────────────────────────────
 
     async def create_task(
         self,
@@ -135,13 +111,26 @@ class TaskManager:  # pylint: disable=too-many-instance-attributes
         session_id: str | None = None,
         handler_name: str | None = None,
         task_id: str | None = None,
+        id: str | None = None,
     ) -> Task:
-        """Register *user_msg* as a new task and start background processing."""
+        """
+        Register *user_msg* as a new task.
+
+        You may pass either `task_id=…` or `id=…`; whichever you provide
+        becomes the client‑visible ID.  Internally we normalize to `canonical`.
+        """
+        # Choose client’s ID if given (id > task_id), else generate one
+        canonical = id or task_id or str(uuid4())
+
         async with self._lock:
-            canonical = task_id or str(uuid4())
             if canonical in self._tasks:
                 raise ValueError(f"Task {canonical} already exists")
 
+            # If both were provided but differ, record alias
+            if id and task_id and id != task_id:
+                self._aliases[id] = canonical
+
+            # Build the Task object
             task = Task(
                 id=canonical,
                 session_id=session_id or str(uuid4()),
@@ -151,15 +140,19 @@ class TaskManager:  # pylint: disable=too-many-instance-attributes
             self._tasks[canonical] = task
             hdl = self._resolve_handler(handler_name)
             self._active[canonical] = hdl.name
-        if self._bus:
-            await self._bus.publish(TaskStatusUpdateEvent(id=canonical, status=task.status, final=False))
 
+        # Immediately publish “submitted”
+        if self._bus:
+            await self._bus.publish(
+                TaskStatusUpdateEvent(id=canonical, status=task.status, final=False)
+            )
+
+        # Launch background runner
         bg = asyncio.create_task(self._run_task(canonical, hdl, user_msg, task.session_id))
         self._background.add(bg)
         bg.add_done_callback(self._background.discard)
-        return task
 
-    # ---- look‑ups --------------------------------------------------
+        return task
 
     async def get_task(self, task_id: str) -> Task:
         real = self._aliases.get(task_id, task_id)
@@ -167,8 +160,6 @@ class TaskManager:  # pylint: disable=too-many-instance-attributes
             return self._tasks[real]
         except KeyError as exc:
             raise TaskNotFound(task_id) from exc
-
-    # ---- updates ---------------------------------------------------
 
     async def update_status(
         self,
@@ -186,11 +177,18 @@ class TaskManager:  # pylint: disable=too-many-instance-attributes
             task.status = TaskStatus(state=new_state, timestamp=datetime.now(timezone.utc))
             if message:
                 task.history = (task.history or []) + [message]
+
         if self._bus:
-            await self._bus.publish(TaskStatusUpdateEvent(id=real, status=task.status, final=self._terminal(new_state)))
+            await self._bus.publish(
+                TaskStatusUpdateEvent(
+                    id=real,
+                    status=task.status,
+                    final=new_state in (TaskState.completed, TaskState.canceled, TaskState.failed),
+                )
+            )
         return task
 
-    async def add_artifact(self, task_id: str, artifact: Artifact) -> Task:  # noqa: D401
+    async def add_artifact(self, task_id: str, artifact: Artifact) -> Task:
         real = self._aliases.get(task_id, task_id)
         async with self._lock:
             task = await self.get_task(real)
@@ -199,9 +197,7 @@ class TaskManager:  # pylint: disable=too-many-instance-attributes
             await self._bus.publish(TaskArtifactUpdateEvent(id=real, artifact=artifact))
         return task
 
-    # ---- cancellation ---------------------------------------------
-
-    async def cancel_task(self, task_id: str, *, reason: str | None = None) -> Task:  # noqa: D401
+    async def cancel_task(self, task_id: str, *, reason: str | None = None) -> Task:
         real = self._aliases.get(task_id, task_id)
         h_name = self._active.get(real)
         if h_name and await self._handlers[h_name].cancel_task(real):
@@ -212,11 +208,9 @@ class TaskManager:  # pylint: disable=too-many-instance-attributes
         msg = Message(role=Role.agent, parts=[TextPart(type="text", text=reason or "Canceled by client")])
         return await self.update_status(task_id, TaskState.canceled, message=msg)
 
-    # ------------------------------------------------------------------
-    # Background runner
-    # ------------------------------------------------------------------
+    # ─── background runner ─────────────────────────────────────────────
 
-    async def _run_task(self, task_id: str, handler: TaskHandler, user_msg: Message, session_id: str) -> None:  # noqa: D401
+    async def _run_task(self, task_id: str, handler: TaskHandler, user_msg: Message, session_id: str) -> None:
         try:
             async for event in handler.process_task(task_id, user_msg, session_id):
                 if isinstance(event, TaskStatusUpdateEvent):
@@ -227,19 +221,17 @@ class TaskManager:  # pylint: disable=too-many-instance-attributes
             logger.info("Task %s cancelled", task_id)
             await self.update_status(task_id, TaskState.canceled)
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("Task %s failed: %s", task_id, exc)
             await self.update_status(task_id, TaskState.failed)
         finally:
             self._active.pop(task_id, None)
 
-    # ------------------------------------------------------------------
-    # Shutdown helper
-    # ------------------------------------------------------------------
+    # ─── graceful shutdown ─────────────────────────────────────────────
 
-    async def shutdown(self) -> None:  # noqa: D401
-        for t in list(self._background):
-            t.cancel()
+    async def shutdown(self) -> None:
+        for bg in list(self._background):
+            bg.cancel()
         if self._background:
             await asyncio.gather(*self._background, return_exceptions=True)
         self._background.clear()
