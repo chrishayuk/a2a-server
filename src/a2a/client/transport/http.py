@@ -1,12 +1,13 @@
+# File: a2a/client/transport/http.py
 from __future__ import annotations
-
 """
-Async HTTP transport for JSON-RPC 2.0 using httpx.
-Implements JSONRPCTransport protocol for A2A.
+Async HTTP transport for JSON‑RPC 2.0 using httpx.
+• Understands normal JSON replies **and** “merged” Server‑Sent‑Events
+  replies (Content‑Type: text/event‑stream).
 """
 import json
 import sys
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Optional
 from uuid import uuid4
 
 import httpx
@@ -19,34 +20,25 @@ from a2a.json_rpc.transport import JSONRPCTransport
 
 class JSONRPCHTTPClient(JSONRPCTransport):
     """
-    HTTP transport for JSON-RPC 2.0 over REST endpoints.
+    HTTP transport for JSON‑RPC 2.0.
 
-    Usage:
-        client = JSONRPCHTTPClient("https://api.agent.com/jsonrpc")
-        result = await client.call("tasks/get", {"id": task_id})
+    • If the server responds with *application/json* → behaves exactly as
+      before.
+    • If the server responds with *text/event‑stream* → the first chunk
+      is treated as the JSON‑RPC response, the remaining chunks are
+      exposed via ``stream()``.
     """
+
     def __init__(self, endpoint: str, timeout: float = 10.0) -> None:
-        self.endpoint = endpoint
+        self.endpoint = endpoint.rstrip("/")
         self._client = httpx.AsyncClient(timeout=timeout)
+        self._pending_sse: Optional[httpx.Response] = None   # <- new
 
-    async def _check_server_reachable(self) -> None:
-        """Check if the server is reachable before making calls."""
-        server_url = self.endpoint.rsplit("/", 1)[0]  # Remove "/rpc" to get base URL
-        try:
-            await self._client.get(server_url, timeout=3.0)
-        except httpx.ConnectError:
-            print(f"Error: Cannot connect to A2A server at {server_url}")
-            print("Please ensure the server is running with: a2a-server --host 0.0.0.0 --port 8000")
-            sys.exit(1)
-        except Exception as e:
-            print(f"Warning: Could not verify server availability: {e}")
-
+    # ------------------------------------------------------------------ #
+    #  Public JSON‑RPC  ------------------------------------------------- #
+    # ------------------------------------------------------------------ #
     async def call(self, method: str, params: Any) -> Any:
-        """Send a JSON-RPC request and return the `result`."""
-        # Generate a real ID so the server returns a response rather than treating it as a notification
         request_id = str(uuid4())
-
-        # Build envelope
         envelope: Json = {
             "jsonrpc": "2.0",
             "method": method,
@@ -54,50 +46,77 @@ class JSONRPCHTTPClient(JSONRPCTransport):
             "id": request_id,
         }
 
-        # Serialize all Pydantic objects and enums properly
-        serialized = json.loads(json.dumps(envelope, default=pydantic_encoder))
+        payload = json.loads(json.dumps(envelope, default=pydantic_encoder))
 
-        # Check server before first call
-        try:
-            # Send
-            response = await self._client.post(self.endpoint, json=serialized)
-            response.raise_for_status()
-        except httpx.ConnectError:
-            # If connection fails, check if server is running and provide helpful message
-            await self._check_server_reachable()
-            # If _check_server_reachable didn't exit, retry the original request
-            response = await self._client.post(self.endpoint, json=serialized)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                print(f"Error: RPC endpoint {self.endpoint} not found")
-                print("Please ensure the A2A server is running and the endpoint is correct")
-                sys.exit(1)
-            raise
+        resp = await self._client.post(self.endpoint, json=payload)
+        resp.raise_for_status()
 
-        data = response.json()
-        if data.get("error"):
-            err = data["error"]
-            raise JSONRPCError(message=err.get("message"), data=err.get("data"))
-        return data.get("result")
+        ctype = resp.headers.get("content-type", "")
+
+        # ── Normal JSON response ───────────────────────────────────────
+        if ctype.startswith("application/json"):
+            data = resp.json()
+            if data.get("error"):
+                err = data["error"]
+                raise JSONRPCError(message=err.get("message"), data=err.get("data"))
+            return data.get("result")
+
+        # ── Merged SSE stream ──────────────────────────────────────────
+        if ctype.startswith("text/event-stream"):
+            # Save response object so .stream() can iterate over it later
+            self._pending_sse = resp
+
+            # First line is “data: {...}\n”
+            async for line in resp.aiter_lines():
+                if line.startswith("data:"):
+                    first = json.loads(line.removeprefix("data:").strip())
+                    break
+            else:  # pragma: no cover – should never happen
+                raise JSONRPCError(message="Empty SSE stream")
+
+            if first.get("error"):
+                err = first["error"]
+                raise JSONRPCError(message=err.get("message"), data=err.get("data"))
+            return first.get("result")
+
+        # ── Unknown reply type ─────────────────────────────────────────
+        raise JSONRPCError(message=f"Unsupported Content‑Type: {ctype}")
 
     async def notify(self, method: str, params: Any) -> None:
-        """Send a JSON-RPC notification (no response expected)."""
-        envelope: Json = {
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-        }
-        serialized = json.loads(json.dumps(envelope, default=pydantic_encoder))
-        try:
-            response = await self._client.post(self.endpoint, json=serialized)
-            response.raise_for_status()
-        except httpx.ConnectError:
-            await self._check_server_reachable()
-            # If _check_server_reachable didn't exit, retry the original request
-            response = await self._client.post(self.endpoint, json=serialized)
-            response.raise_for_status()
+        envelope: Json = {"jsonrpc": "2.0", "method": method, "params": params}
+        payload = json.loads(json.dumps(envelope, default=pydantic_encoder))
+        await self._client.post(self.endpoint, json=payload)
+
+    # ------------------------------------------------------------------ #
+    #  Streaming interface  -------------------------------------------- #
+    # ------------------------------------------------------------------ #
+    async def _sse_iterator(self) -> AsyncIterator[Json]:
+        """
+        Yields the remaining lines of the saved SSE response (after the
+        first “data:” line already consumed in ``call``).
+        """
+        if self._pending_sse is None:
+            raise RuntimeError("stream() called before a merged SSE call")
+
+        async for line in self._pending_sse.aiter_lines():
+            if not line.startswith("data:"):
+                continue
+            try:
+                yield json.loads(line.removeprefix("data:").strip())
+            except json.JSONDecodeError:
+                yield {"raw": line}  # pass through un‑parseable chunks
+
+        await self._pending_sse.aclose()
+        self._pending_sse = None  # reset once stream ends
 
     def stream(self) -> AsyncIterator[Json]:
-        """HTTP transport does not support streaming subscriptions."""
-        raise NotImplementedError("HTTP transport does not support streaming")
+        """
+        Return an async iterator for the merged SSE stream.
+
+        Only valid immediately *after* a call() that produced an SSE
+        response (i.e. tasks/sendSubscribe).  Otherwise raises
+        NotImplementedError to preserve prior semantics.
+        """
+        if self._pending_sse is None:
+            raise NotImplementedError("HTTP transport supports streaming only for merged‑SSE responses")
+        return self._sse_iterator()
