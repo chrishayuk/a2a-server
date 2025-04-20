@@ -64,8 +64,25 @@ a2a-client = "a2a.client.cli:main"
 
 # pytest settings so it finds your src/ layout automatically
 [tool.pytest.ini_options]
-testpaths   = ["tests"]
-pythonpath  = ["src"]
-addopts     = "-v"
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-v"
 asyncio_default_fixture_loop_scope = "function"
 asyncio_mode = "strict"
+
+filterwarnings = [
+  # Protobuf “PyType_Spec” warnings
+  "ignore:Type google\\._upb\\._message\\.MessageMapContainer uses PyType_Spec:DeprecationWarning",
+  "ignore:Type google\\._upb\\._message\\.ScalarMapContainer uses PyType_Spec:DeprecationWarning",
+
+  # dateutil UTC‐timestamp deprecation
+  "ignore:datetime\\.datetime\\.utcfromtimestamp\\(\\) is deprecated:DeprecationWarning",
+
+  # pkg_resources / namespace package deprecations
+  "ignore:pkg_resources is deprecated as an API:DeprecationWarning",
+  "ignore:Deprecated call to `pkg_resources\\.declare_namespace\\('google'\\)`:DeprecationWarning",
+  "ignore:Deprecated call to `pkg_resources\\.declare_namespace\\('google\\.cloud'\\)`:DeprecationWarning",
+
+  # (Optional) catch all other DeprecationWarnings
+  "ignore::DeprecationWarning",
+]

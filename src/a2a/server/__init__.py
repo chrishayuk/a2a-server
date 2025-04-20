@@ -1,4 +1,3 @@
-# File: src/a2a/server/__init__.py
 """
 A2A server module.
 
@@ -10,8 +9,12 @@ from a2a.server.app import create_app
 from a2a.server.tasks.task_manager import TaskManager, TaskNotFound, InvalidTransition
 from a2a.server.pubsub import EventBus
 
+# Expose a preconfigured FastAPI app instance
+app = create_app()
+
 __all__ = [
     'create_app',
+    'app',
     'TaskManager',
     'TaskNotFound',
     'InvalidTransition',

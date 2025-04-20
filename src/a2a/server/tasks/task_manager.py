@@ -1,4 +1,3 @@
-# File: a2a/server/tasks/task_manager.py
 """
 a2a.server.tasks.task_manager
 ================================
@@ -119,18 +118,15 @@ class TaskManager:  # pylint: disable=too-many-instance-attributes
         You may pass either `task_id=…` or `id=…`; whichever you provide
         becomes the client‑visible ID.  Internally we normalize to `canonical`.
         """
-        # Choose client’s ID if given (id > task_id), else generate one
         canonical = id or task_id or str(uuid4())
 
         async with self._lock:
             if canonical in self._tasks:
                 raise ValueError(f"Task {canonical} already exists")
 
-            # If both were provided but differ, record alias
             if id and task_id and id != task_id:
                 self._aliases[id] = canonical
 
-            # Build the Task object
             task = Task(
                 id=canonical,
                 session_id=session_id or str(uuid4()),
@@ -141,13 +137,11 @@ class TaskManager:  # pylint: disable=too-many-instance-attributes
             hdl = self._resolve_handler(handler_name)
             self._active[canonical] = hdl.name
 
-        # Immediately publish “submitted”
         if self._bus:
             await self._bus.publish(
                 TaskStatusUpdateEvent(id=canonical, status=task.status, final=False)
             )
 
-        # Launch background runner
         bg = asyncio.create_task(self._run_task(canonical, hdl, user_msg, task.session_id))
         self._background.add(bg)
         bg.add_done_callback(self._background.discard)
@@ -165,7 +159,6 @@ class TaskManager:  # pylint: disable=too-many-instance-attributes
         self,
         task_id: str,
         new_state: TaskState,
-        *,
         message: Message | None = None,
     ) -> Task:
         real = self._aliases.get(task_id, task_id)
@@ -208,8 +201,6 @@ class TaskManager:  # pylint: disable=too-many-instance-attributes
         msg = Message(role=Role.agent, parts=[TextPart(type="text", text=reason or "Canceled by client")])
         return await self.update_status(task_id, TaskState.canceled, message=msg)
 
-    # ─── background runner ─────────────────────────────────────────────
-
     async def _run_task(self, task_id: str, handler: TaskHandler, user_msg: Message, session_id: str) -> None:
         try:
             async for event in handler.process_task(task_id, user_msg, session_id):
@@ -227,11 +218,13 @@ class TaskManager:  # pylint: disable=too-many-instance-attributes
         finally:
             self._active.pop(task_id, None)
 
-    # ─── graceful shutdown ─────────────────────────────────────────────
-
     async def shutdown(self) -> None:
         for bg in list(self._background):
             bg.cancel()
         if self._background:
             await asyncio.gather(*self._background, return_exceptions=True)
         self._background.clear()
+
+    def tasks_by_state(self, state: TaskState) -> List[Task]:
+        """Return all tasks currently in the given state."""
+        return [t for t in self._tasks.values() if t.status.state == state]

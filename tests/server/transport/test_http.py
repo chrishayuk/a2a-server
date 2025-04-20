@@ -132,8 +132,7 @@ async def test_handler_specific_rpc():
         assert data["id"] == 20
         result = data["result"]
         # EchoHandler should echo the input text
-        # Wait for completion artifact via SSE or subsequent get
-        # Here we at least verify the task is created under "echo"
+        # Here we verify the task is created under "echo"
         assert result["status"]["state"] == "submitted"
         assert result["id"]
 
