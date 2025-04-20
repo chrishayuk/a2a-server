@@ -64,7 +64,6 @@ def deep_update(target: Dict, src: Dict) -> None:
 
 def find_handler_class(handler_type: str) -> Optional[Type[TaskHandler]]:
     """Locate a TaskHandler subclass by import path or discovery."""
-    # Fully‑qualified path?
     if "." in handler_type:
         try:
             mod_path, cls_name = handler_type.rsplit(".", 1)
@@ -76,13 +75,9 @@ def find_handler_class(handler_type: str) -> Optional[Type[TaskHandler]]:
         except Exception as e:
             logging.error(f"Error importing handler {handler_type}: {e}")
         return None
-
-    # Try discovery list
     for cls in discover_all_handlers():
         if cls.__name__ == handler_type:
             return cls
-
-    # Walk the handlers package for abstract classes
     pkg = "a2a.server.tasks.handlers"
     try:
         root = importlib.import_module(pkg)
@@ -96,7 +91,6 @@ def find_handler_class(handler_type: str) -> Optional[Type[TaskHandler]]:
                 continue
     except ImportError:
         pass
-
     logging.error(f"Could not find handler class '{handler_type}'")
     return None
 
@@ -109,8 +103,6 @@ def load_object(spec: str) -> Any:
             return getattr(mod, attr)
         except Exception:
             pass
-
-    # fallback common patterns
     for pat in (
         spec,
         f"{spec}.{spec}",
@@ -131,7 +123,6 @@ def load_object(spec: str) -> Any:
                     return m.agent
         except ImportError:
             pass
-
     raise ImportError(f"Could not locate object '{spec}'")
 
 def prepare_handler_params(
@@ -146,15 +137,12 @@ def prepare_handler_params(
     sig = inspect.signature(handler_cls.__init__)
     valid_params = set(sig.parameters.keys()) - {"self"}
     params: Dict[str, Any] = {}
-
     for k, v in cfg.items():
         if k in ("type", "agent_card"):
             continue
         if k not in valid_params:
-            # skip unknown args
             continue
         if k != "name" and isinstance(v, str):
-            # try to import
             try:
                 params[k] = load_object(v)
                 logging.debug(f"Prepared param {k} → {params[k]}")
@@ -162,7 +150,6 @@ def prepare_handler_params(
             except Exception:
                 pass
         params[k] = v
-
     return params
 
 def setup_handlers(
@@ -175,39 +162,30 @@ def setup_handlers(
     all_handlers: List[TaskHandler] = []
     default_inst: Optional[TaskHandler] = None
     default_key = handlers_cfg.get("default")
-
     for key, sub in handlers_cfg.items():
         if key in ("use_discovery", "handler_packages", "default"):
             continue
         if not isinstance(sub, dict):
             continue
-
         htype = sub.get("type")
         if not htype:
             logging.warning(f"Handler '{key}' missing 'type'")
             continue
-
         cls = find_handler_class(htype)
         if not cls:
             continue
-
         sub.setdefault("name", key)
         params = prepare_handler_params(cls, sub)
-
         try:
             inst = cls(**params)
-            # attach the raw agent_card dict, if any
             if "agent_card" in sub:
                 setattr(inst, "agent_card", sub["agent_card"])
                 logging.debug(f"Attached agent_card to handler '{key}'")
-
             all_handlers.append(inst)
             if key == default_key:
                 default_inst = inst
-
         except Exception as e:
             logging.error(f"Error instantiating handler '{key}': {e}", exc_info=True)
-
     return all_handlers, default_inst
 
 def run_server():
@@ -233,6 +211,11 @@ def run_server():
         action="store_true",
         help="List all registered routes after initialization"
     )
+    parser.add_argument(
+        "--enable-flow-diagnosis",
+        action="store_true",
+        help="Enable detailed flow diagnosis and tracing"
+    )
     args = parser.parse_args()
 
     # Load & merge YAML config
@@ -243,6 +226,11 @@ def run_server():
         cfg["handlers"]["handler_packages"] = args.handler_packages
     if args.no_discovery:
         cfg["handlers"]["use_discovery"] = False
+
+    # Optionally enable flow diagnosis/tracing
+    if args.enable_flow_diagnosis:
+        import a2a.server.debug_events as debug_events
+        debug_events.enable_debug()
 
     # Configure logging
     L = cfg["logging"]
@@ -256,24 +244,33 @@ def run_server():
     # Instantiate handlers
     handlers_config = cfg["handlers"]
     custom_handlers, default_handler = setup_handlers(handlers_config)
+    use_disc = handlers_config.get("use_discovery", True)
 
-    # ── Promote the YAML‑specified default to the front ───────────────
+    # Promote default ahead
     if default_handler:
-        handlers_list = [default_handler] + [
-            h for h in custom_handlers if h is not default_handler
-        ]
+        handlers_list = [default_handler] + [h for h in custom_handlers if h is not default_handler]
     else:
         handlers_list = custom_handlers or None
 
-    # Create FastAPI app with handlers and their config
+    # Create FastAPI app
     app: FastAPI = create_app(
         handlers=handlers_list,
-        use_discovery=handlers_config["use_discovery"],
-        handler_packages=handlers_config["handler_packages"],
-        handlers_config=handlers_config
+        use_discovery=use_disc,
+        handler_packages=handlers_config.get("handler_packages"),
+        handlers_config=handlers_config,
+        docs_url=None,          # disable /docs
+        redoc_url=None,         # disable /redoc
+        openapi_url=None        # disable /openapi.json
     )
 
-    # Run
+    # List routes if flagged
+    if args.list_routes:
+        from fastapi.routing import APIRoute
+        for r in app.routes:
+            if hasattr(r, 'path'):
+                print(r.path)
+
+    # Run server
     host = cfg["server"].get("host", "127.0.0.1")
     port = cfg["server"].get("port", 8000)
     logging.info(f"Starting A2A server on http://{host}:{port}")

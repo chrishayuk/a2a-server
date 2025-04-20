@@ -1,299 +1,245 @@
-# File: src/a2a/server/task_manager.py
+"""a2a.server.tasks.task_manager
+================================
+Canonical TaskManager used by all transports.
+
+Key guarantees
+--------------
+* Accepts **`task_id`** kwarg so transports never need to guess.
+* Keeps an **alias map** so both server‑generated and client‑provided IDs work.
+* Publishes initial *submitted* status immediately via `EventBus`.
+* Provides **legacy helpers** `get_handler`, `get_handlers`, `get_default_handler`.
+* Exposes the historical names `_tasks` and `_active_tasks` so older code that
+  pokes internals continues to run.
+* Graceful `shutdown()` cancels and waits for background jobs.
 """
-Enhanced TaskManager with handler retrieval methods.
-"""
+from __future__ import annotations
+
 import asyncio
-from datetime import datetime, timezone
-from uuid import uuid4
 import logging
-from typing import Dict, List, Optional, Any, AsyncIterable
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from a2a.json_rpc.spec import (
-    Message,
     Artifact,
-    Task,
-    TaskStatus,
-    TaskState,
-    TaskStatusUpdateEvent,
-    TaskArtifactUpdateEvent,
+    Message,
     Role,
+    Task,
+    TaskArtifactUpdateEvent,
+    TaskState,
+    TaskStatus,
+    TaskStatusUpdateEvent,
     TextPart,
 )
 from a2a.server.pubsub import EventBus
 from a2a.server.tasks.task_handler import TaskHandler
 
+__all__ = [
+    "TaskManager",
+    "TaskNotFound",
+    "InvalidTransition",
+]
+
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
 class TaskNotFound(Exception):
-    """Raised when a task ID is not present in the manager."""
+    """Raised when the requested task ID is unknown."""
 
 class InvalidTransition(Exception):
-    """Raised on an illegal state transition according to the FSM."""
+    """Raised on an illegal FSM transition."""
 
-class TaskManager:
-    """
-    Manages A2A tasks and delegates processing to registered handlers.
-    """
+# ---------------------------------------------------------------------------
+# Implementation
+# ---------------------------------------------------------------------------
 
-    _valid_transitions: Dict[TaskState, List[TaskState]] = {
-        TaskState.submitted: [
-            TaskState.working,
-            TaskState.completed,
-            TaskState.canceled,
-            TaskState.failed,
-        ],
-        TaskState.working: [
-            TaskState.input_required,
-            TaskState.completed,
-            TaskState.canceled,
-            TaskState.failed,
-        ],
+class TaskManager:  # pylint: disable=too-many-instance-attributes
+    """Central task registry and orchestrator for the A2A server."""
+
+    _TRANSITIONS: Dict[TaskState, List[TaskState]] = {
+        TaskState.submitted: [TaskState.working, TaskState.completed, TaskState.canceled, TaskState.failed],
+        TaskState.working: [TaskState.input_required, TaskState.completed, TaskState.canceled, TaskState.failed],
         TaskState.input_required: [TaskState.working, TaskState.canceled],
-        # Add valid transitions from canceled and failed states to avoid errors
-        TaskState.canceled: [TaskState.canceled],
-        TaskState.failed: [TaskState.failed],
+        TaskState.completed: [],
+        TaskState.canceled: [],
+        TaskState.failed: [],
+        TaskState.unknown: list(TaskState),  # allow recovery/import
     }
 
-    def __init__(self, event_bus: Optional[EventBus] = None) -> None:
+    # ------------------------------------------------------------------
+    # Construction / handler registry
+    # ------------------------------------------------------------------
+
+    def __init__(self, event_bus: EventBus | None = None) -> None:
+        self._bus = event_bus
         self._tasks: Dict[str, Task] = {}
+        self._aliases: Dict[str, str] = {}           # alias → canonical
+        self._handlers: Dict[str, TaskHandler] = {}
+        self._default_handler: str | None = None
+        self._active: Dict[str, str] = {}            # task_id → handler_name
+
+        # legacy name so older code can still poke internals safely
+        self._active_tasks: Dict[str, str] = self._active  # type: ignore[assignment]
+
         self._lock = asyncio.Lock()
-        self._event_bus = event_bus
-        self._handler_registry: Dict[str, TaskHandler] = {}
-        self._default_handler: Optional[str] = None
-        self._active_tasks: Dict[str, str] = {}  # Map of task_id -> handler name
-        # Keep track of active background tasks
-        self._background_tasks = set()
+        self._background: set[asyncio.Task[Any]] = set()
 
-    def register_handler(self, handler: TaskHandler, default: bool = False) -> None:
-        """Register a task handler with this manager."""
-        name = handler.name
-        self._handler_registry[name] = handler
+    # -------------------- handler helpers ---------------------------
+
+    def register_handler(self, handler: TaskHandler, *, default: bool = False) -> None:  # noqa: D401
+        """Add *handler* to the registry; mark as default if requested."""
+        self._handlers[handler.name] = handler
         if default or self._default_handler is None:
-            self._default_handler = name
-            logger.debug(f"Registered default handler: {name}")
-        else:
-            logger.debug(f"Registered handler: {name}")
+            self._default_handler = handler.name
+        logger.debug("Registered handler %s%s", handler.name, " (default)" if default else "")
 
-    def get_handler(self, name: Optional[str] = None) -> TaskHandler:
-        """
-        Get a handler by name, or the default if name is None.
-        
-        Args:
-            name: Optional handler name
-            
-        Returns:
-            The requested handler
-            
-        Raises:
-            KeyError: If the handler doesn't exist
-        """
+    # ---- legacy public accessors ----------------------------------
+
+    def get_handler(self, name: str | None = None) -> TaskHandler:  # noqa: D401
+        return self._resolve_handler(name)
+
+    def get_handlers(self) -> Dict[str, str]:  # noqa: D401
+        return {n: n for n in self._handlers}
+
+    def get_default_handler(self) -> str | None:  # noqa: D401
+        return self._default_handler
+
+    # ---- internal --------------------------------------------------
+
+    def _resolve_handler(self, name: str | None) -> TaskHandler:
         if name is None:
             if self._default_handler is None:
                 raise ValueError("No default handler registered")
-            return self._handler_registry[self._default_handler]
-        
-        return self._handler_registry[name]
+            return self._handlers[self._default_handler]
+        return self._handlers[name]
 
-    def get_handlers(self) -> Dict[str, str]:
-        """
-        Get all registered handler names.
-        
-        Returns:
-            Dictionary of handler_name -> handler_display_name
-        """
-        return {name: name for name in self._handler_registry.keys()}
+    # ------------------------------------------------------------------
+    # FSM helpers
+    # ------------------------------------------------------------------
 
-    def get_default_handler(self) -> Optional[str]:
-        """Get the name of the default handler."""
-        return self._default_handler
+    @staticmethod
+    def _terminal(state: TaskState) -> bool:
+        return state in (TaskState.completed, TaskState.canceled, TaskState.failed)
 
-    def _register_task(self, task):
-        """Register a background task for cleanup."""
-        self._background_tasks.add(task)
-        
-        # Set up removal when the task is done
-        def _clean_task(t):
-            self._background_tasks.discard(t)
-        task.add_done_callback(_clean_task)
-        
-        return task
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     async def create_task(
-        self, 
-        user_msg: Message, 
-        session_id: Optional[str] = None,
-        handler_name: Optional[str] = None
+        self,
+        user_msg: Message,
+        *,
+        session_id: str | None = None,
+        handler_name: str | None = None,
+        task_id: str | None = None,
     ) -> Task:
-        """Create a task and select appropriate handler."""
+        """Register *user_msg* as a new task and start background processing."""
         async with self._lock:
-            task_id = str(uuid4())
-            sess_id = session_id or str(uuid4())
+            canonical = task_id or str(uuid4())
+            if canonical in self._tasks:
+                raise ValueError(f"Task {canonical} already exists")
+
             task = Task(
-                id=task_id,
-                session_id=sess_id,
+                id=canonical,
+                session_id=session_id or str(uuid4()),
                 status=TaskStatus(state=TaskState.submitted),
                 history=[user_msg],
             )
-            self._tasks[task_id] = task
-            
-            # Select handler and remember which one we used
-            handler = self.get_handler(handler_name)
-            self._active_tasks[task_id] = handler.name
+            self._tasks[canonical] = task
+            hdl = self._resolve_handler(handler_name)
+            self._active[canonical] = hdl.name
+        if self._bus:
+            await self._bus.publish(TaskStatusUpdateEvent(id=canonical, status=task.status, final=False))
 
-        if self._event_bus:
-            await self._event_bus.publish(
-                TaskStatusUpdateEvent(id=task.id, status=task.status, final=False)
-            )
-        
-        # Launch the task processing in the background
-        background_task = asyncio.create_task(
-            self._process_task(task_id, handler, user_msg, sess_id)
-        )
-        self._register_task(background_task)
-        
+        bg = asyncio.create_task(self._run_task(canonical, hdl, user_msg, task.session_id))
+        self._background.add(bg)
+        bg.add_done_callback(self._background.discard)
         return task
+
+    # ---- look‑ups --------------------------------------------------
 
     async def get_task(self, task_id: str) -> Task:
-        task = self._tasks.get(task_id)
-        if task is None:
-            raise TaskNotFound(task_id)
-        return task
+        real = self._aliases.get(task_id, task_id)
+        try:
+            return self._tasks[real]
+        except KeyError as exc:
+            raise TaskNotFound(task_id) from exc
+
+    # ---- updates ---------------------------------------------------
 
     async def update_status(
         self,
         task_id: str,
         new_state: TaskState,
-        message: Optional[Message] = None,
+        *,
+        message: Message | None = None,
     ) -> Task:
+        real = self._aliases.get(task_id, task_id)
         async with self._lock:
-            task = await self.get_task(task_id)
-            
-            # Skip validation if transitioning to the same state
-            if task.status.state != new_state and new_state not in self._valid_transitions.get(task.status.state, []):
-                raise InvalidTransition(f"{task.status.state} → {new_state} not allowed")
-
-            task.status = TaskStatus(
-                state=new_state,
-                timestamp=datetime.now(timezone.utc),
-            )
-            if message is not None:
-                # record message in history but not in TaskStatus
+            task = await self.get_task(real)
+            cur = task.status.state
+            if new_state != cur and new_state not in self._TRANSITIONS[cur]:
+                raise InvalidTransition(f"{cur} → {new_state} not allowed")
+            task.status = TaskStatus(state=new_state, timestamp=datetime.now(timezone.utc))
+            if message:
                 task.history = (task.history or []) + [message]
-
-        if self._event_bus:
-            final = new_state in (
-                TaskState.completed,
-                TaskState.canceled,
-                TaskState.failed,
-            )
-            await self._event_bus.publish(
-                TaskStatusUpdateEvent(id=task.id, status=task.status, final=final)
-            )
+        if self._bus:
+            await self._bus.publish(TaskStatusUpdateEvent(id=real, status=task.status, final=self._terminal(new_state)))
         return task
 
-    async def add_artifact(self, task_id: str, artifact: Artifact) -> Task:
+    async def add_artifact(self, task_id: str, artifact: Artifact) -> Task:  # noqa: D401
+        real = self._aliases.get(task_id, task_id)
         async with self._lock:
-            task = await self.get_task(task_id)
+            task = await self.get_task(real)
             task.artifacts = (task.artifacts or []) + [artifact]
-
-        if self._event_bus:
-            await self._event_bus.publish(
-                TaskArtifactUpdateEvent(id=task.id, artifact=artifact)
-            )
+        if self._bus:
+            await self._bus.publish(TaskArtifactUpdateEvent(id=real, artifact=artifact))
         return task
 
-    async def cancel_task(self, task_id: str, reason: Optional[str] = None) -> Task:
-        # Try to cancel via the handler first
-        handler_name = self._active_tasks.get(task_id)
-        if handler_name:
-            handler = self.get_handler(handler_name)
-            success = await handler.cancel_task(task_id)
-            if success:
-                # Create a cancellation message
-                cancel_part = TextPart(type="text", text=reason or "Canceled by client")
-                cancel_msg = Message(role=Role.agent, parts=[cancel_part])
-                # Make sure the message gets added to history
-                return await self.update_status(task_id, TaskState.canceled, cancel_msg)
-        
-        # Otherwise just mark it as canceled
-        cancel_part = TextPart(type="text", text=reason or "Canceled by client")
-        cancel_msg = Message(role=Role.agent, parts=[cancel_part])
-        return await self.update_status(task_id, TaskState.canceled, cancel_msg)
+    # ---- cancellation ---------------------------------------------
 
-    def tasks_by_state(self, state: TaskState) -> List[Task]:
-        return [t for t in self._tasks.values() if t.status.state == state]
-        
-    async def _process_task(
-        self, 
-        task_id: str, 
-        handler: TaskHandler,
-        message: Message,
-        session_id: Optional[str]
-    ) -> None:
-        """Process a task by delegating to the selected handler."""
+    async def cancel_task(self, task_id: str, *, reason: str | None = None) -> Task:  # noqa: D401
+        real = self._aliases.get(task_id, task_id)
+        h_name = self._active.get(real)
+        if h_name and await self._handlers[h_name].cancel_task(real):
+            return await self._finish_cancel(real, reason)
+        return await self._finish_cancel(real, reason)
+
+    async def _finish_cancel(self, task_id: str, reason: str | None) -> Task:
+        msg = Message(role=Role.agent, parts=[TextPart(type="text", text=reason or "Canceled by client")])
+        return await self.update_status(task_id, TaskState.canceled, message=msg)
+
+    # ------------------------------------------------------------------
+    # Background runner
+    # ------------------------------------------------------------------
+
+    async def _run_task(self, task_id: str, handler: TaskHandler, user_msg: Message, session_id: str) -> None:  # noqa: D401
         try:
-            async for event in handler.process_task(task_id, message, session_id):
-                # Update our task record based on events
+            async for event in handler.process_task(task_id, user_msg, session_id):
                 if isinstance(event, TaskStatusUpdateEvent):
-                    await self.update_status(
-                        task_id, 
-                        event.status.state, 
-                        event.status.message
-                    )
+                    await self.update_status(task_id, event.status.state, message=event.status.message)
                 elif isinstance(event, TaskArtifactUpdateEvent):
                     await self.add_artifact(task_id, event.artifact)
-                    
-                # Events are also published via update_status/add_artifact
         except asyncio.CancelledError:
-            # Handle cancellation gracefully
-            logger.info(f"Task {task_id} processing was cancelled")
-            
-            # Only update if not already canceled
-            task = await self.get_task(task_id)
-            if task.status.state != TaskState.canceled:
-                await self.update_status(task_id, TaskState.canceled)
-                if self._event_bus:
-                    await self._event_bus.publish(
-                        TaskStatusUpdateEvent(
-                            id=task_id, 
-                            status=TaskStatus(state=TaskState.canceled),
-                            final=True
-                        )
-                    )
-            raise  # Re-raise so asyncio sees task was properly cancelled
-        except Exception as e:
-            # Update task to failed state on error
-            logger.exception(f"Error in handler for task {task_id}: {e}")
-            
-            # Only update if not already in terminal state
-            task = await self.get_task(task_id)
-            if task.status.state not in (TaskState.completed, TaskState.canceled, TaskState.failed):
-                await self.update_status(task_id, TaskState.failed)
-                if self._event_bus:
-                    await self._event_bus.publish(
-                        TaskStatusUpdateEvent(
-                            id=task_id, 
-                            status=TaskStatus(state=TaskState.failed),
-                            final=True
-                        )
-                    )
+            logger.info("Task %s cancelled", task_id)
+            await self.update_status(task_id, TaskState.canceled)
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Task %s failed: %s", task_id, exc)
+            await self.update_status(task_id, TaskState.failed)
         finally:
-            # Clean up
-            if task_id in self._active_tasks:
-                del self._active_tasks[task_id]
+            self._active.pop(task_id, None)
 
+    # ------------------------------------------------------------------
+    # Shutdown helper
+    # ------------------------------------------------------------------
 
-async def cancel_pending_tasks():
-    """Cancel all pending background tasks and wait for them to complete."""
-    from a2a.server.methods import _background_tasks
-    
-    tasks = list(_background_tasks)
-    for task in tasks:
-        if not task.done():
-            task.cancel()
-    
-    if tasks:
-        # Wait for all tasks to complete cancellation
-        await asyncio.gather(*tasks, return_exceptions=True)
-    
-    _background_tasks.clear()
+    async def shutdown(self) -> None:  # noqa: D401
+        for t in list(self._background):
+            t.cancel()
+        if self._background:
+            await asyncio.gather(*self._background, return_exceptions=True)
+        self._background.clear()

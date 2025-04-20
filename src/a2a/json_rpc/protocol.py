@@ -1,4 +1,4 @@
-# a2a/json_rpc/protocol.py
+# File: a2a/json_rpc/protocol.py
 """
 JSON-RPC 2.0 dispatcher for A2A (Agent-to-Agent) interoperability.
 Transport-agnostic: parse, validate, dispatch, serialize responses.
@@ -7,6 +7,7 @@ Transport-agnostic: parse, validate, dispatch, serialize responses.
 from __future__ import annotations
 import json
 import logging
+import pkgutil
 from inspect import iscoroutinefunction
 from typing import Any, Awaitable, Callable, Dict, Optional, Union
 
@@ -38,6 +39,13 @@ class JSONRPCProtocol:
     """Dispatch JSON-RPC 2.0 requests to registered handlers."""
 
     def __init__(self) -> None:
+        # Load the A2A JSON‑RPC schema from the bundled file
+        data = pkgutil.get_data(__package__, "a2a_spec.json")
+        if data is None:
+            raise RuntimeError("Could not load bundled a2a_spec.json")
+        self._schema = json.loads(data)
+
+        # Method registry and ID counter
         self._methods: Dict[str, Handler] = {}
         self._id_counter = 0
 
@@ -74,22 +82,21 @@ class JSONRPCProtocol:
         return anyio.run(self._handle_raw_async, raw)
 
     async def _handle_raw_async(self, raw: str | bytes | Json) -> Optional[Json]:
-        # 1) PARSE STAGE: JSON or schema errors get id=None
+        # 1) PARSE: JSON or schema errors get id=None
         try:
             req = self._parse(raw)
         except JSONRPCError as exc:
             return self._error_response(None, exc)
 
-        # 2) DISPATCH STAGE: preserve req.id on errors
+        # 2) DISPATCH: preserve req.id on errors
         try:
             if req.id is None:
-                # notification: invoke and drop
+                # notification → invoke and drop result
                 await self._invoke(req)
                 return None
             result = await self._invoke(req)
             return Response(id=req.id, result=result).model_dump()
         except JSONRPCError as exc:
-            # here exc.CODE could be METHOD_NOT_FOUND, etc.
             return self._error_response(req.id, exc)
 
     def _parse(self, raw: str | bytes | Json) -> Request:
@@ -127,6 +134,7 @@ class JSONRPCProtocol:
         return Response(id=req_id, error=exc.to_dict()).model_dump(exclude_none=False)
 
     # A2A-specific helpers
+
     @staticmethod
     def task_not_found(task_id: str) -> TaskNotFoundError:
         return TaskNotFoundError(data={"id": task_id})

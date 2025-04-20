@@ -58,30 +58,6 @@ def register_methods(
     """
     Register JSON-RPC methods for task operations.
     """
-    @protocol.method("tasks/send")
-    async def _send(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Received RPC method {method}")
-        logger.debug(f"Method params: {params}")
-        p = TaskSendParams.model_validate(params)
-        
-        # Get the handler name if provided in params
-        handler_name = params.get("handler")
-        
-        # Create task with the specified handler or default
-        task = await manager.create_task(
-            p.message, 
-            session_id=p.session_id,
-            handler_name=handler_name
-        )
-        
-        handler_info = f" using handler '{handler_name}'" if handler_name else ""
-        logger.info(f"Created task {task.id} via {method}{handler_info}")
-        
-        # Return using alias keys
-        result = Task.model_validate(task.model_dump()).model_dump(exclude_none=True, by_alias=True)
-        logger.debug(f"tasks/send returning: {result}")
-        return result
-
     @protocol.method("tasks/get")
     async def _get(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Received RPC method {method}")
@@ -107,6 +83,37 @@ def register_methods(
         logger.info(f"Task {iid.id} canceled via RPC")
         return None
 
+    # File: a2a/server/methods.py
+# Modify the tasks/send and tasks/sendSubscribe methods:
+
+    @protocol.method("tasks/send")
+    async def _send(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Received RPC method {method}")
+        logger.debug(f"Method params: {params}")
+        p = TaskSendParams.model_validate(params)
+        
+        # Get the handler name if provided in params
+        handler_name = params.get("handler")
+        
+        # Extract client task ID if provided in params
+        client_task_id = params.get("id")
+        
+        # Create task with the specified handler or default
+        task = await manager.create_task(
+            p.message, 
+            session_id=p.session_id,
+            handler_name=handler_name,
+            task_id=client_task_id  # Pass client ID if provided
+        )
+        
+        handler_info = f" using handler '{handler_name}'" if handler_name else ""
+        logger.info(f"Created task {task.id} via {method}{handler_info}")
+        
+        # Return using alias keys
+        result = Task.model_validate(task.model_dump()).model_dump(exclude_none=True, by_alias=True)
+        logger.debug(f"tasks/send returning: {result}")
+        return result
+
     @protocol.method("tasks/sendSubscribe")
     async def _send_subscribe(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Received RPC method {method}")
@@ -116,11 +123,15 @@ def register_methods(
         # Get the handler name if provided in params
         handler_name = params.get("handler")
         
+        # Extract client task ID if provided in params
+        client_task_id = params.get("id")
+        
         # Create task with specified or default handler
         task = await manager.create_task(
             p.message, 
             session_id=p.session_id, 
-            handler_name=handler_name
+            handler_name=handler_name,
+            task_id=client_task_id  # Pass client ID if provided
         )
         
         handler_info = f" using handler '{handler_name}'" if handler_name else ""
