@@ -1,4 +1,5 @@
-"""a2a.server.transport.http
+"""
+a2a.server.transport.http
 ================================
 HTTP JSON‑RPC transport layer with first‑class streaming (SSE) support.
 
@@ -84,7 +85,17 @@ async def _streaming_send_subscribe(
         raw["handler"] = handler_name
     params = TaskSendParams.model_validate(raw)
 
-    task, server_id, client_id = await _create_task(tm, params, handler_name)
+    # Attempt to create the task; if it already exists, reuse the client ID
+    try:
+        task, server_id, client_id = await _create_task(tm, params, handler_name)
+    except ValueError as e:
+        msg = str(e).lower()
+        if "already exists" in msg:
+            server_id = params.id
+            client_id = params.id
+        else:
+            raise
+
     logger.info(
         "[transport.http] created task server_id=%s client_id=%s handler=%s",
         server_id, client_id, handler_name or "<default>"
@@ -107,12 +118,17 @@ async def _streaming_send_subscribe(
                             "type": "status",
                             "id": client_id,
                             "status": {
-                                "state": str(event.status.state),
-                                "timestamp": event.status.timestamp.isoformat()
-                                    if event.status.timestamp else None,
-                                "message": jsonable_encoder(
-                                    event.status.message, exclude_none=True
-                                ) if event.status.message else None,
+                                "state": event.status.state.value,
+                                "timestamp": (
+                                    event.status.timestamp.isoformat()
+                                    if event.status.timestamp else None
+                                ),
+                                "message": (
+                                    jsonable_encoder(
+                                        event.status.message, exclude_none=True
+                                    )
+                                    if event.status.message else None
+                                ),
                             },
                             "final": event.final,
                         },
@@ -143,6 +159,7 @@ async def _streaming_send_subscribe(
                 chunk = json.dumps(notification)
                 yield f"data: {chunk}\n\n"
 
+                # break once we hit a terminal status
                 if getattr(event, "final", False) or (
                     isinstance(event, TaskStatusUpdateEvent) and _is_terminal(
                         event.status.state

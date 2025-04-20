@@ -3,7 +3,7 @@ from __future__ import annotations
 """
 JSON‑RPC over HTTP + Server‑Sent‑Events transport.
 
-•  POST tasks/sendSubscribe → merged SSE response (first line = JSON‑RPC result)
+•  POST tasks/sendSubscribe → merged SSE response (no initial JSON‑RPC result)
 •  GET  /events             → pure SSE stream
 """
 
@@ -28,19 +28,21 @@ class JSONRPCSSEClient(JSONRPCTransport):
         sse_endpoint: str | None = None,
         timeout: float = 10.0,
     ) -> None:
+        # RPC endpoint, e.g. http://host/handler/rpc
         self.endpoint = endpoint.rstrip("/")
-        self.sse_endpoint = (
-            sse_endpoint or self.endpoint.rsplit("/", 1)[0].rstrip("/") + "/events"
-        )
+        # Alias for sendSubscribe (must hit /handler, not /handler/rpc)
+        if self.endpoint.endswith("/rpc"):
+            self.alias_endpoint = self.endpoint.rsplit("/rpc", 1)[0]
+        else:
+            self.alias_endpoint = self.endpoint
+        # SSE GET endpoint for standalone streams
+        self.sse_endpoint = sse_endpoint or (self.alias_endpoint + "/events")
 
         self._client = httpx.AsyncClient(timeout=timeout)
         self._pending_resp: Optional[httpx.Response] = None
         self._pending_iter: Optional[AsyncIterator[str]] = None
         self._shutdown = False
 
-    # ------------------------------------------------------------------ #
-    # JSON‑RPC call/notify                                               #
-    # ------------------------------------------------------------------ #
     async def call(self, method: str, params: Any) -> Any:
         envelope: Json = {
             "jsonrpc": "2.0",
@@ -49,35 +51,23 @@ class JSONRPCSSEClient(JSONRPCTransport):
             "id": str(uuid.uuid4()),
         }
 
-        # open streaming response
-        req = self._client.build_request("POST", self.endpoint, json=envelope)
+        # For sendSubscribe → POST to alias to get merged SSE
+        url = self.alias_endpoint if method == "tasks/sendSubscribe" else self.endpoint
+        req = self._client.build_request("POST", url, json=envelope)
         resp = await self._client.send(req, stream=True)
         resp.raise_for_status()
 
         ctype = resp.headers.get("content-type", "")
 
-        # ---------- merged SSE stream --------------------------------- #
         if ctype.startswith("text/event-stream"):
+            # Don’t consume any lines here—stash them for .stream()
             self._pending_resp = resp
-            iter_lines = resp.aiter_lines()
-            self._pending_iter = iter_lines  # store for later streaming
+            self._pending_iter = resp.aiter_lines()
+            # Return None so A2AClient.send_subscribe can ignore it
+            return None
 
-            # grab first data: line = JSON‑RPC response
-            async for line in iter_lines:
-                if line.startswith("data:"):
-                    first = json.loads(line[5:].strip())
-                    break
-            else:  # pragma: no cover
-                raise JSONRPCError(message="empty SSE stream")
-
-            if first.get("error"):
-                err = first["error"]
-                raise JSONRPCError(message=err.get("message"), data=err.get("data"))
-
-            return first.get("result", first)
-
-        # ---------- classic JSON reply -------------------------------- #
-        data = await resp.json() if resp.content else {}
+        # Otherwise, classic JSON‑RPC reply
+        data = await resp.json()
         if data.get("error"):
             err = data["error"]
             raise JSONRPCError(message=err.get("message"), data=err.get("data"))
@@ -87,11 +77,8 @@ class JSONRPCSSEClient(JSONRPCTransport):
         envelope: Json = {"jsonrpc": "2.0", "method": method, "params": params}
         await self._client.post(self.endpoint, json=envelope)
 
-    # ------------------------------------------------------------------ #
-    # streaming helpers                                                  #
-    # ------------------------------------------------------------------ #
     async def _iter_pending(self) -> AsyncIterator[Json]:
-        """Continue streaming lines from the merged SSE response."""
+        """Yield parsed JSON objects from the merged SSE stream."""
         if self._pending_iter is None or self._pending_resp is None:
             raise RuntimeError("stream() called without a pending merged SSE")
 
@@ -109,15 +96,15 @@ class JSONRPCSSEClient(JSONRPCTransport):
 
     def stream(self) -> AsyncIterator[Json]:
         """
-        Return an async iterator:
+        Return an async iterator over SSE messages:
 
-        • if call() already opened a merged stream → iterate that one
-        • otherwise                               → open standalone /events
+        • If `.call("tasks/sendSubscribe")` already opened a merged stream,
+          we drain _that_ (`_iter_pending`).
+        • Otherwise → open a standalone GET /events SSE stream.
         """
-        if self._pending_iter is not None:           # merged stream
+        if self._pending_iter is not None:
             return self._iter_pending()
 
-        # -------- standalone /events connection ----------------------- #
         async def _aiter():
             headers = {"accept": "text/event-stream"}
             async with self._client.stream("GET", self.sse_endpoint, headers=headers) as resp:
@@ -139,9 +126,6 @@ class JSONRPCSSEClient(JSONRPCTransport):
 
         return _aiter()
 
-    # ------------------------------------------------------------------ #
-    # tidy‑up                                                            #
-    # ------------------------------------------------------------------ #
     async def close(self) -> None:
         self._shutdown = True
         if self._pending_resp is not None:

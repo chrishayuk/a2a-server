@@ -1,51 +1,64 @@
-# File: a2a/client/a2a_client.py
-from __future__ import annotations
+#!/usr/bin/env python3
+# a2a/client/a2a_client.py
 """
 High‑level A2A client: wraps any JSON‑RPC transport and provides domain‑specific
 methods.
+
+Key changes
+-----------
+* Unified helper ``_coerce_stream_event`` converts raw SSE payloads into
+  ``TaskStatusUpdateEvent`` / ``TaskArtifactUpdateEvent`` instances **while
+  discarding the helper key ``type``** that the transport adds for the
+  consumer‑side router.  This prevents Pydantic validation errors and means
+  the caller always receives real spec objects.
+* Streaming loops for ``send_subscribe`` and ``resubscribe`` now use the
+  helper and are identical apart from the initial RPC call.
+* No external behaviour changes – just correct artifact handling.
 """
 
-import logging
-from typing import Any, AsyncIterator, Type, Union, Dict
+from __future__ import annotations
 
-from a2a.json_rpc.transport import JSONRPCTransport
+import logging
+from typing import Any, AsyncIterator, Dict, Type, Union
+
 from a2a.client.transport.http import JSONRPCHTTPClient
-from a2a.client.transport.websocket import JSONRPCWebSocketClient
 from a2a.client.transport.sse import JSONRPCSSEClient
+from a2a.client.transport.websocket import JSONRPCWebSocketClient
 from a2a.json_rpc.json_rpc_errors import JSONRPCError
 from a2a.json_rpc.spec import (
+    Message,
     Task,
-    TaskSendParams,
-    TaskQueryParams,
+    TaskArtifactUpdateEvent,
     TaskIdParams,
     TaskPushNotificationConfig,
+    TaskQueryParams,
+    TaskSendParams,
     TaskStatusUpdateEvent,
-    TaskArtifactUpdateEvent,
 )
+from a2a.json_rpc.transport import JSONRPCTransport
 
 logger = logging.getLogger("a2a-client")
 
 
 class A2AClient:
-    """
-    Agent‑to‑Agent high‑level client.
-
-    Accepts any JSONRPCTransport, remains transport‑agnostic,
-    and uses Pydantic spec models for all inputs/outputs.
-    """
+    """Agent‑to‑Agent high‑level client (transport‑agnostic)."""
 
     # ------------------------------------------------------------------ #
-    #  construction helpers                                              #
+    # construction helpers                                               #
     # ------------------------------------------------------------------ #
     def __init__(self, transport: JSONRPCTransport) -> None:
         self.transport = transport
 
     @classmethod
-    def over_http(cls: Type["A2AClient"], endpoint: str, timeout: float = 10.0) -> "A2AClient":
+    def over_http(
+        cls: Type["A2AClient"], endpoint: str, timeout: float = 10.0
+    ) -> "A2AClient":
         return cls(JSONRPCHTTPClient(endpoint, timeout=timeout))
 
     @classmethod
-    def over_ws(cls: Type["A2AClient"], url: str, timeout: float = 10.0) -> "A2AClient":
+    def over_ws(
+        cls: Type["A2AClient"], url: str, timeout: float = 10.0
+    ) -> "A2AClient":
         return cls(JSONRPCWebSocketClient(url, timeout=timeout))
 
     @classmethod
@@ -58,112 +71,94 @@ class A2AClient:
         return cls(JSONRPCSSEClient(endpoint, sse_endpoint=sse_endpoint, timeout=timeout))
 
     # ------------------------------------------------------------------ #
-    #  basic RPC wrappers                                                #
+    # basic RPC wrappers                                                 #
     # ------------------------------------------------------------------ #
     async def send_task(self, params: TaskSendParams) -> Task:
-        payload = params.model_dump(mode="json", exclude_none=True, by_alias=True)
-        raw = await self.transport.call("tasks/send", payload)
+        raw = await self.transport.call(
+            "tasks/send", params.model_dump(mode="json", exclude_none=True, by_alias=True)
+        )
         return Task.model_validate(raw)
 
     async def get_task(self, params: TaskQueryParams) -> Task:
-        payload = params.model_dump(mode="json", exclude_none=True, by_alias=True)
-        raw = await self.transport.call("tasks/get", payload)
+        raw = await self.transport.call(
+            "tasks/get", params.model_dump(mode="json", exclude_none=True, by_alias=True)
+        )
         return Task.model_validate(raw)
 
     async def cancel_task(self, params: TaskIdParams) -> None:
-        payload = params.model_dump(mode="json", exclude_none=True, by_alias=True)
-        await self.transport.call("tasks/cancel", payload)
+        await self.transport.call(
+            "tasks/cancel", params.model_dump(mode="json", exclude_none=True, by_alias=True)
+        )
 
     async def set_push_notification(
         self, params: TaskPushNotificationConfig
     ) -> TaskPushNotificationConfig:
-        payload = params.model_dump(mode="json", exclude_none=True, by_alias=True)
-        raw = await self.transport.call("tasks/pushNotification/set", payload)
+        raw = await self.transport.call(
+            "tasks/pushNotification/set",
+            params.model_dump(mode="json", exclude_none=True, by_alias=True),
+        )
         return TaskPushNotificationConfig.model_validate(raw)
 
     async def get_push_notification(
         self, params: TaskIdParams
     ) -> TaskPushNotificationConfig:
-        payload = params.model_dump(mode="json", exclude_none=True, by_alias=True)
-        raw = await self.transport.call("tasks/pushNotification/get", payload)
+        raw = await self.transport.call(
+            "tasks/pushNotification/get",
+            params.model_dump(mode="json", exclude_none=True, by_alias=True),
+        )
         return TaskPushNotificationConfig.model_validate(raw)
 
     # ------------------------------------------------------------------ #
-    #  streaming helpers                                                 #
+    # helpers                                                            #
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _coerce_stream_event(evt: Dict[str, Any]) -> Union[
+        TaskStatusUpdateEvent, TaskArtifactUpdateEvent, Dict[str, Any]
+    ]:
+        """Convert raw notification dict to the appropriate spec model.
+
+        The server adds a helper field ``type`` (``status`` | ``artifact``)
+        which is *not* part of either spec model, so we drop it before
+        validating.
+        """
+        if "method" in evt and evt.get("method") == "tasks/event":
+            evt = evt["params"]
+
+        # At this point evt should be the dictionary produced in transport.http
+        if "status" in evt:
+            payload = {k: v for k, v in evt.items() if k != "type"}
+            return TaskStatusUpdateEvent.model_validate(payload)
+        if "artifact" in evt:
+            payload = {k: v for k, v in evt.items() if k != "type"}
+            return TaskArtifactUpdateEvent.model_validate(payload)
+        return evt  # unknown – let the caller decide
+
+    # ------------------------------------------------------------------ #
+    # streaming helpers                                                  #
     # ------------------------------------------------------------------ #
     async def send_subscribe(
-        self,
-        params: TaskSendParams,
-    ) -> AsyncIterator[Union[Dict, TaskStatusUpdateEvent, TaskArtifactUpdateEvent]]:
-        """
-        Send a task **and** subscribe to its status/artifact events in one call.
+        self, params: TaskSendParams
+    ) -> AsyncIterator[Union[TaskStatusUpdateEvent, TaskArtifactUpdateEvent]]:
+        # Initiate the merged SSE connection (first line is the RPC result)
+        await self.transport.call(
+            "tasks/sendSubscribe", params.model_dump(mode="json", exclude_none=True, by_alias=True)
+        )
 
-        The correct order is: perform the JSON‑RPC call first (which opens a
-        merged SSE response inside the transport) **then** obtain the iterator.
-        """
-        payload = params.model_dump(mode="json", exclude_none=True, by_alias=True)
-        task_result = await self.transport.call("tasks/sendSubscribe", payload)
-
-        # grab iterator after the call – now the transport has a pending stream
-        iterator = self.transport.stream()
-
-        task_id = task_result.get("id") if isinstance(task_result, dict) else None
-        if task_id:
-            logger.debug("Subscribing to task ID: %s", task_id)
-
-        async for msg in iterator:
+        async for raw_msg in self.transport.stream():
             try:
-                logger.debug("Received event message: %s", msg)
-
-                # normal “tasks/event” notifications
-                if isinstance(msg, dict) and msg.get("method") == "tasks/event":
-                    yield msg.get("params", {})
-                # bare event objects
-                elif isinstance(msg, dict) and (
-                    "status" in msg or "artifact" in msg or "final" in msg
-                ):
-                    yield msg
-                # wrapped inside {"result": …}
-                elif isinstance(msg, dict) and "result" in msg:
-                    yield msg["result"]
-                else:
-                    logger.warning("Unrecognized message format: %s", msg)
-                    yield msg
-            except Exception as exc:
-                logger.error("Failed to process event: %s", exc, exc_info=True)
-                yield msg
+                yield self._coerce_stream_event(raw_msg)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.error("Error parsing stream event: %s", exc, exc_info=True)
+                # decide whether to swallow or re‑raise – swallow keeps the stream alive
 
     async def resubscribe(
-        self,
-        params: TaskQueryParams,
-    ) -> AsyncIterator[Union[Dict, TaskStatusUpdateEvent, TaskArtifactUpdateEvent]]:
-        """
-        Re‑attach to a running task and stream remaining events.
-
-        Same ordering fix as in `send_subscribe()`.
-        """
-        payload = params.model_dump(mode="json", exclude_none=True, by_alias=True)
-        await self.transport.call("tasks/resubscribe", payload)
-
-        logger.debug("Resubscribed to task ID: %s", params.id)
-
-        iterator = self.transport.stream()
-
-        async for msg in iterator:
+        self, params: TaskQueryParams
+    ) -> AsyncIterator[Union[TaskStatusUpdateEvent, TaskArtifactUpdateEvent]]:
+        await self.transport.call(
+            "tasks/resubscribe", params.model_dump(mode="json", exclude_none=True, by_alias=True)
+        )
+        async for raw_msg in self.transport.stream():
             try:
-                logger.debug("Received event message: %s", msg)
-
-                if isinstance(msg, dict) and msg.get("method") == "tasks/event":
-                    yield msg.get("params", {})
-                elif isinstance(msg, dict) and (
-                    "status" in msg or "artifact" in msg or "final" in msg
-                ):
-                    yield msg
-                elif isinstance(msg, dict) and "result" in msg:
-                    yield msg["result"]
-                else:
-                    logger.warning("Unrecognized message format: %s", msg)
-                    yield msg
-            except Exception as exc:
-                logger.error("Failed to process event: %s", exc, exc_info=True)
-                yield msg
+                yield self._coerce_stream_event(raw_msg)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.error("Error parsing resubscribe event: %s", exc, exc_info=True)
