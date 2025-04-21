@@ -7,7 +7,7 @@ Includes connect, server info, and server switching commands.
 import json
 import os
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Tuple
 
 from rich import print
 from rich.panel import Panel
@@ -82,7 +82,6 @@ async def check_server_connection(base_url: str, client: A2AClient) -> bool:
         return False
 
 
-# Update the cmd_connect function to better display agent card information
 async def cmd_connect(cmd_parts: List[str], context: Dict[str, Any]) -> bool:
     """
     Connect to an A2A server by URL or server name.
@@ -91,6 +90,8 @@ async def cmd_connect(cmd_parts: List[str], context: Dict[str, Any]) -> bool:
       /connect <url>         - Connect to a specific URL
       /connect <server_name> - Connect to a named server from config
     """
+    quiet = context.get("quiet", False)
+
     if len(cmd_parts) < 2:
         print("[yellow]Error: No URL or server name provided. Usage: /connect <url or name>[/yellow]")
         return True
@@ -100,15 +101,18 @@ async def cmd_connect(cmd_parts: List[str], context: Dict[str, Any]) -> bool:
     server_names = context.get("server_names", {})
     if target in server_names:
         base_url = server_names[target]
-        print(f"[dim]Using server '{target}' at {base_url}[/dim]")
+        if not quiet:
+            print(f"[dim]Using server '{target}' at {base_url}[/dim]")
     else:
         base_url = target
         if not base_url.startswith(("http://", "https://")):
             base_url = f"http://localhost:8000/{base_url.strip('/')}"
-        print(f"[dim]Using direct URL: {base_url}[/dim]")
+        if not quiet:
+            print(f"[dim]Using direct URL: {base_url}[/dim]")
 
     # 1) Fetch the agent‑card if it exists
-    print(f"[dim]Checking for agent card at {base_url}/agent-card.json...[/dim]")
+    if not quiet:
+        print(f"[dim]Checking for agent card at {base_url}/agent-card.json...[/dim]")
     success, agent_data = await fetch_agent_card(base_url)
 
     if success:
@@ -118,40 +122,49 @@ async def cmd_connect(cmd_parts: List[str], context: Dict[str, Any]) -> bool:
         # 2) If the card itself has a "url", use that as the new base
         if agent_data.get("url"):
             base_url = agent_data["url"].rstrip("/")
-            print(f"[dim]Re‑based via agent‑card 'url': {base_url}[/dim]")
+            if not quiet:
+                print(f"[dim]Re‑based via agent‑card 'url': {base_url}[/dim]")
         else:
             # 3) Otherwise apply any advertised mount/basePath
             mount = agent_data.get("mount") or agent_data.get("basePath", "").lstrip("/")
             if mount:
                 base_url = base_url.rstrip("/") + "/" + mount
-                print(f"[dim]Applying mount point: /{mount} → new base_url: {base_url}[/dim]")
+                if not quiet:
+                    print(f"[dim]Applying mount point: /{mount} → new base_url: {base_url}[/dim]")
 
         context["agent_info"] = agent_data
     else:
-        print(f"[dim]No agent card found, continuing with connection...[/dim]")
+        if not quiet:
+            print(f"[dim]No agent card found, continuing with connection...[/dim]")
 
     # 4) Now build the proper endpoints
     rpc_url = base_url.rstrip("/") + "/rpc"
     events_url = base_url.rstrip("/") + "/events"
 
     try:
-        print(f"[dim]Creating HTTP client for {rpc_url}...[/dim]")
+        if not quiet:
+            print(f"[dim]Creating HTTP client for {rpc_url}...[/dim]")
         client = A2AClient.over_http(rpc_url)
 
-        print(f"[dim]Testing connection to A2A server...[/dim]")
+        if not quiet:
+            print(f"[dim]Testing connection to A2A server...[/dim]")
         if await check_server_connection(base_url, client):
-            print(f"[green]Successfully connected to A2A server at {base_url}[/green]")
+            if not quiet:
+                print(f"[green]Successfully connected to A2A server at {base_url}[/green]")
             context["client"] = client
 
             # Initialize SSE client on the correct /events path
-            print(f"[dim]Creating SSE client for {events_url}...[/dim]")
+            if not quiet:
+                print(f"[dim]Creating SSE client for {events_url}...[/dim]")
             try:
                 sse_client = A2AClient.over_sse(rpc_url, events_url)
                 context["streaming_client"] = sse_client
-                print(f"[green]SSE client initialized[/green]")
+                if not quiet:
+                    print(f"[green]SSE client initialized[/green]")
             except Exception as e:
-                print(f"[yellow]Warning: Could not initialize SSE client: {e}[/yellow]")
-                print(f"[yellow]Some streaming functionality may not be available[/yellow]")
+                if not quiet:
+                    print(f"[yellow]Warning: Could not initialize SSE client: {e}[/yellow]")
+                    print(f"[yellow]Some streaming functionality may not be available[/yellow]")
 
             # Finally, render the agent‑card UI if we have one
             if "agent_info" in context:
@@ -169,7 +182,6 @@ async def cmd_connect(cmd_parts: List[str], context: Dict[str, Any]) -> bool:
                         console.print(Panel(desc, title=f"Connected to {info.get('name')}", border_style="green"))
 
             return True
-
         else:
             print(f"[red]Failed to connect to A2A server at {base_url}[/red]")
             print(f"[yellow]Make sure the server supports the A2A protocol[/yellow]")
@@ -308,7 +320,6 @@ async def cmd_servers(cmd_parts: List[str], context: Dict[str, Any]) -> bool:
 
     # Add rows for each server
     for i, (name, url) in enumerate(server_names.items(), 1):
-        # Check if this is the current server
         current_marker = " [yellow]✓[/yellow]" if url.rstrip("/") == context.get("base_url", "").rstrip("/") else ""
         table.add_row(str(i), f"{name}{current_marker}", url)
 
@@ -323,10 +334,6 @@ async def cmd_use(cmd_parts: List[str], context: Dict[str, Any]) -> bool:
     Switch to a different preconfigured server.
 
     Usage: /use <server_name or #>
-
-    Examples:
-      /use chef_agent  - Connect to the server named "chef_agent"
-      /use 1           - Connect to the first server in the list
     """
     if len(cmd_parts) < 2:
         print("[yellow]Error: No server name or number provided. Usage: /use <server_name or #>[/yellow]")
@@ -336,7 +343,6 @@ async def cmd_use(cmd_parts: List[str], context: Dict[str, Any]) -> bool:
     server_names = context.get("server_names", {})
 
     if target in server_names:
-        # Disconnect from current server first
         await cmd_disconnect(["/disconnect"], context)
         return await cmd_connect(["/connect", target], context)
 
@@ -358,29 +364,16 @@ async def cmd_load_config(cmd_parts: List[str], context: Dict[str, Any]) -> bool
     Load server configuration from a file.
 
     Usage: /load_config <file_path>
-
-    Example: /load_config ~/.a2a/servers.json
-
-    Format:
-    {
-      "servers": {
-        "default": "http://localhost:8000",
-        "pirate_agent": "http://localhost:8000/pirate_agent",
-        "chef_agent": "http://localhost:8000/chef_agent"
-      }
-    }
     """
     if len(cmd_parts) > 1:
         file_path = os.path.expanduser(cmd_parts[1])
     else:
-        # Try default locations
         default_paths = [
             "~/.a2a/config.json",
             "~/.a2a/servers.json",
             "./a2a-config.json",
             "./servers.json"
         ]
-
         for path in default_paths:
             expanded = os.path.expanduser(path)
             if os.path.exists(expanded):
@@ -390,33 +383,19 @@ async def cmd_load_config(cmd_parts: List[str], context: Dict[str, Any]) -> bool
         else:
             print("[yellow]No config file specified and no default config found.[/yellow]")
             print("[yellow]Usage: /load_config <file_path>[/yellow]")
-            print("[dim]Default locations checked:[/dim]")
-            for path in default_paths:
-                print(f"[dim]  - {os.path.expanduser(path)}[/dim]")
             return True
 
     try:
         with open(file_path, 'r') as f:
             config = json.load(f)
-
-        # Extract server names
         servers = config.get("servers", {})
         if not servers:
             print(f"[yellow]No servers found in config file: {file_path}[/yellow]")
-            print("[dim]Config file should contain a 'servers' object mapping names to URLs.[/dim]")
             return True
-
-        # Update context
         context["server_names"] = servers
-
-        # Also store config file path
         context["config_file"] = file_path
-
         print(f"[green]Loaded {len(servers)} servers from {file_path}[/green]")
-
-        # Show the servers
         await cmd_servers(cmd_parts, context)
-
         return True
     except FileNotFoundError:
         print(f"[red]Config file not found: {file_path}[/red]")
@@ -427,7 +406,6 @@ async def cmd_load_config(cmd_parts: List[str], context: Dict[str, Any]) -> bool
     except Exception as e:
         print(f"[red]Error loading config: {e}[/red]")
         if context.get("debug_mode", False):
-            import traceback
             traceback.print_exc()
         return True
 
@@ -437,53 +415,33 @@ async def cmd_save_config(cmd_parts: List[str], context: Dict[str, Any]) -> bool
     Save current server configuration to a file.
 
     Usage: /save_config [file_path]
-
-    If no file path is provided, uses the last loaded config file
-    or the default ~/.a2a/config.json.
     """
-    # Determine file path
     if len(cmd_parts) > 1:
         file_path = os.path.expanduser(cmd_parts[1])
-    elif "config_file" in context:
+    elif context.get("config_file"):
         file_path = context["config_file"]
     else:
-        # Use default location
         file_path = os.path.expanduser("~/.a2a/config.json")
 
-    # Get servers from context
     servers = context.get("server_names", {})
     if not servers:
         print("[yellow]No servers configured to save.[/yellow]")
         return True
 
-    # Create directory if needed
     directory = os.path.dirname(file_path)
     if directory and not os.path.exists(directory):
-        try:
-            os.makedirs(directory)
-            print(f"[dim]Created directory: {directory}[/dim]")
-        except Exception as e:
-            print(f"[red]Error creating directory {directory}: {e}[/red]")
-            return True
+        os.makedirs(directory, exist_ok=True)
+        print(f"[dim]Created directory: {directory}[/dim]")
 
-    # Create config object
-    config = {"servers": servers}
-
-    # Save to file
     try:
         with open(file_path, 'w') as f:
-            json.dump(config, f, indent=2)
-
-        print(f"[green]Saved {len(servers)} servers to {file_path}[/green]")
-
-        # Store config file path
+            json.dump({"servers": servers}, f, indent=2)
         context["config_file"] = file_path
-
+        print(f"[green]Saved {len(servers)} servers to {file_path}[/green]")
         return True
     except Exception as e:
         print(f"[red]Error saving config: {e}[/red]")
         if context.get("debug_mode", False):
-            import traceback
             traceback.print_exc()
         return True
 
@@ -493,35 +451,21 @@ async def cmd_add_server(cmd_parts: List[str], context: Dict[str, Any]) -> bool:
     Add a server to the configuration.
 
     Usage: /add_server <name> <url>
-
-    Example: /add_server my_agent http://localhost:8000/my_agent
     """
     if len(cmd_parts) < 3:
         print("[yellow]Error: Missing arguments. Usage: /add_server <name> <url>[/yellow]")
         return True
 
-    name = cmd_parts[1]
-    url = cmd_parts[2]
-
-    # Validate URL
-    if not (url.startswith("http://") or url.startswith("https://")):
+    name, url = cmd_parts[1], cmd_parts[2]
+    if not url.startswith(("http://", "https://")):
         url = f"http://localhost:8000/{url.strip('/')}"
         print(f"[dim]Normalized URL to: {url}[/dim]")
 
-    # Get servers from context or create new dict
     servers = context.get("server_names", {})
-
-    # Add or update server
     servers[name] = url
-
-    # Update context
     context["server_names"] = servers
-
     print(f"[green]Added server '{name}' at {url}[/green]")
-
-    # Show all servers
     await cmd_servers(cmd_parts, context)
-
     return True
 
 
@@ -530,34 +474,21 @@ async def cmd_remove_server(cmd_parts: List[str], context: Dict[str, Any]) -> bo
     Remove a server from the configuration.
 
     Usage: /remove_server <name>
-
-    Example: /remove_server my_agent
     """
     if len(cmd_parts) < 2:
         print("[yellow]Error: No server name provided. Usage: /remove_server <name>[/yellow]")
         return True
 
     name = cmd_parts[1]
-
-    # Get servers from context
     servers = context.get("server_names", {})
-
-    # Check if server exists
     if name not in servers:
         print(f"[yellow]Server '{name}' not found.[/yellow]")
         return True
 
-    # Remove server
     url = servers.pop(name)
-
-    # Update context
     context["server_names"] = servers
-
     print(f"[green]Removed server '{name}' at {url}[/green]")
-
-    # Show remaining servers
     await cmd_servers(cmd_parts, context)
-
     return True
 
 
@@ -567,8 +498,6 @@ register_command("/disconnect", cmd_disconnect)
 register_command("/server", cmd_server)
 register_command("/servers", cmd_servers)
 register_command("/use", cmd_use)
-
-# Config management commands
 register_command("/load_config", cmd_load_config)
 register_command("/save_config", cmd_save_config)
 register_command("/add_server", cmd_add_server)

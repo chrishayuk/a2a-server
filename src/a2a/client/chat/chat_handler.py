@@ -70,6 +70,7 @@ async def handle_chat_mode(base_url=None, config_file=None):
     Workflow:
       1. Initialize ChatContext (loads config, sets base_url)
       2. UI setup & welcome banner
+      2.1 Mark chat_mode so commands suppress info logs
       3. Auto‑connect to a server (runs /connect)
       4. Loop: read user input → send or send_subscribe
     """
@@ -86,6 +87,11 @@ async def handle_chat_mode(base_url=None, config_file=None):
         # 2) UI setup
         ui_manager = ChatUIManager(chat_context)
         display_welcome_banner(chat_context.to_dict())
+
+        # 2.1) Mark that we're in chat mode so commands can suppress [dim] logs
+        ctx = chat_context.to_dict()
+        ctx["chat_mode"] = True
+        chat_context.update_from_dict(ctx)
 
         # 3) Auto‑connect (runs /connect, fetches agent-card)
         await auto_connect(ui_manager, chat_context)

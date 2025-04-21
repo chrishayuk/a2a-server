@@ -42,45 +42,34 @@ from a2a.client.ui.ui_helpers import (
 # Define these helper functions directly in this file to avoid import issues
 def display_artifact(artifact: Any, console: Optional[Console] = None) -> None:
     """
-    Display an artifact in a rich panel.
-    
-    Args:
-        artifact: The artifact to display
-        console: Optional Console instance
+    Render a single artifact:
+    • If a part has `.text`, show it directly.
+    • Otherwise dump the part as JSON (annotated with MIME if present).
     """
     if console is None:
         console = Console()
-    
-    name = artifact.name or "<unnamed>"
-    
-    # Build content for each part
-    content: List[str] = []
+
+    name = getattr(artifact, "name", None) or "<unnamed>"
+    chunks: List[str] = []
+
     for part in artifact.parts:
-        # If text is present, render it directly
         if getattr(part, "text", None):
-            content.append(part.text)
-        # If part has a MIME type, show it plus a JSON dump
+            chunks.append(part.text)
         elif getattr(part, "mime_type", None):
-            content.append(f"[dim]MIME: {part.mime_type}[/dim]")
+            chunks.append(f"[dim]MIME: {part.mime_type}[/dim]")
             try:
-                content.append(json.dumps(part.model_dump(exclude_none=True), indent=2))
+                chunks.append(json.dumps(part.model_dump(exclude_none=True), indent=2))
             except Exception:
-                content.append(str(part))
-        # Fallback: JSON dump of whatever fields exist, or str(part)
+                chunks.append(str(part))
         else:
             try:
-                content.append(json.dumps(part.model_dump(exclude_none=True), indent=2))
+                chunks.append(json.dumps(part.model_dump(exclude_none=True), indent=2))
             except Exception:
-                content.append(str(part))
-    
-    # Join all parts with blank lines
-    display_text = "\n\n".join(content)
-    
-    console.print(Panel(
-        display_text,
-        title=f"Artifact: {name}",
-        border_style="green"
-    ))
+                chunks.append(str(part))
+
+    console.print(
+        Panel("\n\n".join(chunks), title=f"Artifact: {name}", border_style="green")
+    )
 
 def display_task_artifacts(task: Any, console: Optional[Console] = None) -> None:
     """
