@@ -42,33 +42,32 @@ from a2a.client.ui.ui_helpers import (
 # Define these helper functions directly in this file to avoid import issues
 def display_artifact(artifact: Any, console: Optional[Console] = None) -> None:
     """
-    Render a single artifact:
-    • If a part has `.text`, show it directly.
-    • Otherwise dump the part as JSON (annotated with MIME if present).
+    Render a single artifact: display the first available text field.
     """
     if console is None:
         console = Console()
 
     name = getattr(artifact, "name", None) or "<unnamed>"
-    chunks: List[str] = []
 
-    for part in artifact.parts:
-        if getattr(part, "text", None):
-            chunks.append(part.text)
-        elif getattr(part, "mime_type", None):
-            chunks.append(f"[dim]MIME: {part.mime_type}[/dim]")
+    # Try to find a 'text' value in each part
+    for part in getattr(artifact, "parts", []):
+        # Prefer direct attribute
+        text = getattr(part, "text", None)
+        # Fallback to model_dump if available
+        if not text and hasattr(part, "model_dump"):
             try:
-                chunks.append(json.dumps(part.model_dump(exclude_none=True), indent=2))
+                text = part.model_dump().get("text")
             except Exception:
-                chunks.append(str(part))
-        else:
-            try:
-                chunks.append(json.dumps(part.model_dump(exclude_none=True), indent=2))
-            except Exception:
-                chunks.append(str(part))
+                text = None
+        if text:
+            console.print(
+                Panel(text, title=f"Artifact: {name}", border_style="green")
+            )
+            return
 
+    # No text found → placeholder
     console.print(
-        Panel("\n\n".join(chunks), title=f"Artifact: {name}", border_style="green")
+        Panel("[no displayable text]", title=f"Artifact: {name}", border_style="green")
     )
 
 def display_task_artifacts(task: Any, console: Optional[Console] = None) -> None:

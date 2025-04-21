@@ -3,6 +3,7 @@
 """
 UI helper functions for A2A client display and formatting.
 """
+import json
 import os
 import platform
 import sys
