@@ -383,133 +383,109 @@ async def cmd_resubscribe(cmd_parts: List[str], context: Dict[str, Any]) -> bool
 async def cmd_send_subscribe(cmd_parts: List[str], context: Dict[str, Any]) -> bool:
     """
     Send a task and subscribe to its updates using tasks/sendSubscribe.
-    
+
     Usage: /send_subscribe <text>
-    
-    Example: /send_subscribe Tell me a joke
     """
     if len(cmd_parts) < 2:
         print("[yellow]Error: No text provided. Usage: /send_subscribe <text>[/yellow]")
         return True
-        
-    # Get the client from context
-    client = context.get("client")
-    if not client:
-        print("[red]Error: Not connected to a server. Use /connect first.[/red]")
-        return True
-        
-    # Extract the text (everything after the command)
+
     text = " ".join(cmd_parts[1:])
-    
-    # Set up SSE client for the sendSubscribe operation
+
+    # 1) Ensure we have an HTTP client (with the correct /rpc URL)
+    http_client = context.get("client")
     base_url = context.get("base_url", "http://localhost:8000")
-    rpc_url = base_url + "/rpc"
-    events_url = base_url + "/events"
-    
-    try:
-        print(f"[dim]Creating SSE client for sendSubscribe...[/dim]")
-        sse_client = A2AClient.over_sse(rpc_url, events_url)
-        # Store for potential reuse
-        context["streaming_client"] = sse_client
-    except Exception as e:
-        print(f"[red]Error creating streaming client: {e}[/red]")
-        if context.get("debug_mode", False):
-            import traceback
-            traceback.print_exc()
-        return True
-    
-    # Create the task parameters
+    rpc_url = base_url.rstrip("/") + "/rpc"
+    if not http_client:
+        try:
+            http_client = A2AClient.over_http(rpc_url)
+            context["client"] = http_client
+        except Exception as e:
+            print(f"[red]Error creating HTTP client: {e}[/red]")
+            if context.get("debug_mode"):
+                import traceback; traceback.print_exc()
+            return True
+
+    # 2) Ensure we have a streaming client (with the correct /events URL)
+    sse_client = context.get("streaming_client")
+    events_url = base_url.rstrip("/") + "/events"
+    if not sse_client:
+        try:
+            print(f"[dim]Initializing SSE client for {events_url}...[/dim]")
+            sse_client = A2AClient.over_sse(rpc_url, events_url)
+            context["streaming_client"] = sse_client
+            print(f"[green]SSE client initialized[/green]")
+        except Exception as e:
+            print(f"[yellow]Warning: Could not initialize SSE client: {e}[/yellow]")
+            print(f"[yellow]Streaming will fall back to non‑streaming mode[/yellow]")
+            sse_client = None
+
+    # 3) Build the send parameters
     task_id = str(uuid.uuid4())
     part = TextPart(type="text", text=text)
     message = Message(role="user", parts=[part])
     params = TaskSendParams(id=task_id, sessionId=None, message=message)
-    
-    # Store the task ID in context for easy reference
     context["last_task_id"] = task_id
-    
+
     console = Console()
-    print(f"[dim]Sending task with ID: {task_id} and subscribing to updates. Press Ctrl+C to stop...[/dim]")
-    
+    print(f"[dim]Sending task with ID: {task_id}[/dim]")
+
     try:
-        # Store artifacts for displaying after completion
+        # Send the initial task via HTTP RPC
+        task = await http_client.send_task(params)
+        display_task_info(task)
+    except Exception as e:
+        print(f"[red]Error sending task: {e}[/red]")
+        if context.get("debug_mode"):
+            import traceback; traceback.print_exc()
+        return True
+
+    # 4) If we have an SSE client, stream updates
+    if sse_client:
+        print(f"[dim]Subscribing to updates. Press Ctrl+C to stop...[/dim]")
         all_artifacts = []
         final_status = None
-        
-        # Use Live display for updating status
-        with Live("", refresh_per_second=4, console=console) as live:
-            try:
-                print(f"[dim]Starting sendSubscribe stream...[/dim]")
-                
-                # Call the send_subscribe method which uses tasks/sendSubscribe RPC
-                # This method combines sending the task and subscribing to updates
+
+        try:
+            from rich.live import Live
+            from rich.text import Text
+            from a2a.client.ui.ui_helpers import format_status_event, format_artifact_event
+
+            with Live("", refresh_per_second=4, console=console) as live:
                 async for evt in sse_client.send_subscribe(params):
                     if isinstance(evt, TaskStatusUpdateEvent):
-                        # Update the live display with status information
-                        status_text = format_status_event(evt)
-                        live.update(Text.from_markup(status_text))
-                        
-                        # Store the final status
+                        live.update(Text.from_markup(format_status_event(evt)))
                         if evt.final:
                             final_status = evt.status
-                            
-                        # If this is the final update, break
-                        if evt.final:
                             break
                     elif isinstance(evt, TaskArtifactUpdateEvent):
-                        # Update the live display with artifact information
-                        artifact_text = format_artifact_event(evt)
-                        live.update(Text.from_markup(artifact_text))
-                        
-                        # Store the artifact for later display
+                        live.update(Text.from_markup(format_artifact_event(evt)))
                         all_artifacts.append(evt.artifact)
                     else:
-                        # Unknown event type
-                        event_type = type(evt).__name__
-                        live.update(Text(f"Received event: {event_type}"))
-                        
-                        # Debug information for unknown events
-                        if context.get("debug_mode", False):
-                            print(f"[dim]Unknown event: {evt}[/dim]")
-            except asyncio.CancelledError:
-                print("\n[yellow]Watch interrupted.[/yellow]")
-            except Exception as e:
-                print(f"\n[red]Error watching task: {e}[/red]")
-                if context.get("debug_mode", False):
-                    import traceback
-                    traceback.print_exc()
-        
-        # Display completion message
+                        live.update(Text(f"Unknown event: {type(evt).__name__}"))
+        except KeyboardInterrupt:
+            print("\n[yellow]Subscription interrupted.[/yellow]")
+        except Exception as e:
+            print(f"\n[red]Error during streaming: {e}[/red]")
+            if context.get("debug_mode"):
+                import traceback; traceback.print_exc()
+
+        # 5) Final output
         if final_status:
             print(f"[green]Task {task_id} completed.[/green]")
-            
-            # Display final status message if available
-            if hasattr(final_status, "message") and final_status.message and hasattr(final_status.message, "parts"):
+            if final_status.message and final_status.message.parts:
                 for part in final_status.message.parts:
-                    if hasattr(part, "text") and part.text:
-                        # Display the assistant's response in a panel
-                        console.print(Panel(
-                            part.text,
-                            title="Response",
-                            border_style="blue"
-                        ))
-        
-        # Display all artifacts
+                    if part.text:
+                        console.print(Panel(part.text, title="Response", border_style="blue"))
+
         if all_artifacts:
             print(f"\n[bold]Artifacts ({len(all_artifacts)}):[/bold]")
-            for artifact in all_artifacts:
-                display_artifact(artifact, console)
-        
-        return True
-    except KeyboardInterrupt:
-        print("\n[yellow]Watch interrupted.[/yellow]")
-        return True
-    except Exception as e:
-        print(f"[red]Error setting up watch: {e}[/red]")
-        if context.get("debug_mode", False):
-            import traceback
-            traceback.print_exc()
-        return True
-    
+            for art in all_artifacts:
+                display_artifact(art, console)
+
+    return True
+
+   
 # Register all commands in this module with names that match A2A protocol methods
 register_command("/send", cmd_send)
 register_command("/get", cmd_get)

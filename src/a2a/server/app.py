@@ -1,8 +1,9 @@
 # File: a2a/server/app.py
+
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 import a2a.server.diagnosis.debug_events as debug_events
@@ -20,6 +21,12 @@ from a2a.server.agent_card import get_agent_cards
 from a2a.server.routes import debug as _debug_routes
 from a2a.server.routes import health as _health_routes
 from a2a.server.routes import handlers as _handler_routes
+
+# for root‐level SSE and agent‐card
+from a2a.server.transport.sse import _create_sse_response, setup_sse
+from a2a.server.transport.http import setup_http
+from a2a.server.transport.ws import setup_ws
+from a2a.server.agent_card import get_agent_cards
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -108,16 +115,46 @@ def create_app(
     app.state.task_manager = task_manager
 
     # ── Transports ────────────────────────────────────────────────────
-    from a2a.server.transport.http import setup_http
-    from a2a.server.transport.sse import setup_sse
-    from a2a.server.transport.ws import setup_ws
-
     logger.info("Setting up transport layers")
     setup_http(app, protocol, task_manager, event_bus)
     setup_ws(app, protocol, event_bus, task_manager)
     setup_sse(app, event_bus, task_manager)
 
-    # ── Startup/shutdown for our monitor ───────────────────────────────
+    # ── Root‐level health, SSE & agent‐card ──────────────────────────
+
+    @app.get("/", include_in_schema=False)
+    async def root_health(request: Request, task_ids: Optional[List[str]] = Query(None)):
+        if task_ids:
+            # upgrade to SSE streaming
+            return await _create_sse_response(app.state.event_bus, task_ids)
+        return {
+            "service": "A2A Server",
+            "endpoints": {
+                "rpc": "/rpc",
+                "events": "/events",
+                "ws": "/ws",
+                "agent_card": "/agent-card.json",
+            },
+        }
+
+    @app.get("/events", include_in_schema=False)
+    async def root_events(request: Request, task_ids: Optional[List[str]] = Query(None)):
+        """
+        Upgrade GET /events?task_ids=<id1>&task_ids=<id2> to an SSE stream
+        of all matching task events.
+        """
+        return await _create_sse_response(app.state.event_bus, task_ids)
+
+    @app.get("/agent-card.json", include_in_schema=False)
+    async def root_agent_card(request: Request):
+        base = str(request.base_url).rstrip("/")
+        cards = get_agent_cards(handlers_config or {}, base)
+        default = next(iter(cards.values()), None)
+        if default:
+            return default.dict(exclude_none=True)
+        raise HTTPException(status_code=404, detail="No agent card available")
+
+    # ── Startup/shutdown for flow diagnosis monitor ───────────────────────
     if monitor_coro:
         import asyncio
 

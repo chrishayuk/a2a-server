@@ -1,4 +1,6 @@
+#!/usr/bin/env python3
 # File: a2a/server/routes/handlers.py
+
 import logging
 from typing import List, Optional
 from fastapi import FastAPI, Request, Query
@@ -53,11 +55,15 @@ def register_handler_routes(
             card = app.state.agent_cards.get(_h)
             if card:
                 return card.dict(exclude_none=True)
-            # fallback minimal
+
+            # fallback minimal agent‑card, now with "mount"
             return {
                 "name": _h.replace("_", " ").title(),
                 "description": f"A2A handler for {_h}",
-                "url": f"{base}",
+                # tell the client to mount under /<handler_name>
+                "mount": _h,
+                # base URL for this handler
+                "url": f"{base}/{_h}",
                 "version": "1.0.0",
                 "capabilities": {"streaming": True},
                 "defaultInputModes": ["text/plain"],
