@@ -26,32 +26,31 @@ from a2a.json_rpc.spec import TaskQueryParams
 logger = logging.getLogger("a2a-client")
 
 
+# a2a/client/chat/commands/connection.py
 async def fetch_agent_card(base_url: str) -> Tuple[bool, Dict[str, Any]]:
     """
-    Fetch the agent card from the server.
-
-    Args:
-        base_url: The base URL of the server
-
-    Returns:
-        Tuple of (success, card_data)
+    Look for an agent card at the legacy location *and* the RFC‑style
+    .well‑known path.  Returns (found?, json_data).
     """
-    try:
-        import httpx
-        async with httpx.AsyncClient() as client:
-            url = f"{base_url}/agent-card.json"
-            logger.debug(f"Fetching agent card from {url}")
+    import httpx
 
-            response = await client.get(url, timeout=3.0)
-            if response.status_code == 200:
-                data = response.json()
-                return True, data
-            else:
-                logger.debug(f"Agent card not available: {response.status_code}")
-                return False, {}
-    except Exception as e:
-        logger.debug(f"Error fetching agent card: {e}", exc_info=True)
-        return False, {}
+    # 1. Legacy draft path (kept for backward compatibility)
+    legacy = f"{base_url.rstrip('/')}/agent-card.json"
+    # 2. Current spec path
+    modern = f"{base_url.rstrip('/')}/.well-known/agent.json"
+
+    async with httpx.AsyncClient() as client:
+        for url in (legacy, modern):
+            try:
+                r = await client.get(url, timeout=3.0)
+                if r.status_code == 200:
+                    logger.debug("Fetched agent card from %s", url)
+                    return True, r.json()
+            except Exception as e:
+                logger.debug("Fetch attempt failed for %s: %s", url, e)
+
+    logger.debug("No agent card found under %s or %s", legacy, modern)
+    return False, {}
 
 
 async def check_server_connection(base_url: str, client: A2AClient) -> bool:
