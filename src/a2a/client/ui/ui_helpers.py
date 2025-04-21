@@ -184,39 +184,40 @@ def format_artifact_event(event: Any) -> str:
     
     return f"[{ARTIFACT_COLOR}]Artifact: {name}[/{ARTIFACT_COLOR}]\n" + "\n".join(parts_text)
 
-def display_artifact(artifact: Any, console: Optional[Console] = None) -> None:
+async def display_artifact(artifact: Any, console: Optional[Console] = None) -> None:
     """
     Display an artifact in a rich panel.
-    
-    Args:
-        artifact: The artifact to display
-        console: Optional Console instance
     """
     if console is None:
         console = Console()
-    
+
     name = artifact.name or "<unnamed>"
-    
-    # Build content for each part
     content = []
     for part in artifact.parts:
-        if hasattr(part, "text"):
+        # Render text if available
+        if getattr(part, "text", None):
             content.append(part.text)
-        elif hasattr(part, "mime_type"):
-            content.append(f"[dim]Content with MIME type: {part.mime_type}[/dim]")
+        # Show MIME type and full JSON dump for structured parts
+        elif getattr(part, "mime_type", None):
+            content.append(f"[dim]MIME: {part.mime_type}[/dim]")
+            try:
+                content.append(json.dumps(part.model_dump(exclude_none=True), indent=2))
+            except Exception:
+                content.append(str(part))
+        # Fallback to JSON dump or string
         else:
-            content.append(f"[dim]{type(part).__name__} data[/dim]")
-    
-    # Join all parts with newlines
+            try:
+                content.append(json.dumps(part.model_dump(exclude_none=True), indent=2))
+            except Exception:
+                content.append(str(part))
+
     display_text = "\n\n".join(content)
-    
-    # Create panel
     console.print(Panel(
         display_text,
         title=f"Artifact: {name}",
         border_style=ARTIFACT_COLOR
     ))
-
+    
 def display_task_artifacts(task: Any, console: Optional[Console] = None) -> None:
     """
     Display all artifacts in a task.

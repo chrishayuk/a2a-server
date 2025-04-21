@@ -54,19 +54,28 @@ def display_artifact(artifact: Any, console: Optional[Console] = None) -> None:
     name = artifact.name or "<unnamed>"
     
     # Build content for each part
-    content = []
+    content: List[str] = []
     for part in artifact.parts:
-        if hasattr(part, "text"):
+        # If text is present, render it directly
+        if getattr(part, "text", None):
             content.append(part.text)
-        elif hasattr(part, "mime_type"):
-            content.append(f"[dim]Content with MIME type: {part.mime_type}[/dim]")
+        # If part has a MIME type, show it plus a JSON dump
+        elif getattr(part, "mime_type", None):
+            content.append(f"[dim]MIME: {part.mime_type}[/dim]")
+            try:
+                content.append(json.dumps(part.model_dump(exclude_none=True), indent=2))
+            except Exception:
+                content.append(str(part))
+        # Fallback: JSON dump of whatever fields exist, or str(part)
         else:
-            content.append(f"[dim]{type(part).__name__} data[/dim]")
+            try:
+                content.append(json.dumps(part.model_dump(exclude_none=True), indent=2))
+            except Exception:
+                content.append(str(part))
     
-    # Join all parts with newlines
+    # Join all parts with blank lines
     display_text = "\n\n".join(content)
     
-    # Create panel
     console.print(Panel(
         display_text,
         title=f"Artifact: {name}",
@@ -91,6 +100,7 @@ def display_task_artifacts(task: Any, console: Optional[Console] = None) -> None
     # Display each artifact
     for artifact in task.artifacts:
         display_artifact(artifact, console)
+
 
 async def cmd_send(cmd_parts: List[str], context: Dict[str, Any]) -> bool:
     """
