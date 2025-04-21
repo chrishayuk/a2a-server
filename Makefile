@@ -1,65 +1,56 @@
-SHELL := /usr/bin/env bash
+.PHONY: clean clean-test clean-pyc clean-build clean-docs help test lint build dist install publish
 
-.PHONY: help check-pdm install generate-models test lint format build clean serve client
+# Find Python path
+PYTHON := $(shell which python3)
 
 help:
-	@echo "Usage: make [target]"
-	@echo
-	@echo "Available targets:"
-	@echo "  install          Install project & dev dependencies via pdm"
-	@echo "  generate-models  Regenerate Pydantic models from JSON schema"
-	@echo "  test             Run pytest suite"
-	@echo "  lint             Run flake8 on src/ and tests/"
-	@echo "  format           Run black on src/ and tests/"
-	@echo "  build            Build sdist & wheel via pdm"
-	@echo "  clean            Remove build artifacts, caches & temp files"
-	@echo "  serve            Run the A2A server (uv run a2a-server)"
-	@echo "  client           Show the A2A client help (uv run a2a-client)"
+	@echo "clean - remove all build, test, coverage and Python artifacts"
+	@echo "clean-build - remove build artifacts"
+	@echo "clean-pyc - remove Python file artifacts"
+	@echo "clean-test - remove test and coverage artifacts"
+	@echo "lint - check style with flake8"
+	@echo "test - run tests quickly with the default Python"
+	@echo "build - build the package (no clean)"
+	@echo "dist - clean and package for distribution"
+	@echo "install - install the package to the active Python's site-packages"
+	@echo "publish - package and upload a release to PyPI"
 
-# ensure pdm is on PATH
-check-pdm:
-	@command -v pdm >/dev/null 2>&1 || { \
-	  echo >&2 "Error: pdm is not installed. Install it with pip install pdm"; \
-	  exit 1; \
-	}
+clean: clean-build clean-pyc clean-test
 
-install: check-pdm
-	pdm install
+clean-build:
+	rm -fr build/
+	rm -fr dist/
+	rm -fr *.egg-info/
 
-serve: check-pdm
-	uv run a2a-server
+clean-pyc:
+	find . -name '*.pyc' -exec rm -f {} +
+	find . -name '*.pyo' -exec rm -f {} +
+	find . -name '*~' -exec rm -f {} +
+	find . -name '__pycache__' -exec rm -fr {} +
 
-client: check-pdm
-	uv run a2a-client --help
-	pdm install -E client
-	uv run a2a-client --help
-	uv run a2a-client --help
+clean-test:
+	rm -fr .tox/
+	rm -fr .pytest_cache/
+	rm -fr .coverage
+	rm -fr htmlcov/
 
-generate-models: check-pdm
-	pdm run generate-models
+lint:
+	$(PYTHON) -m flake8 src tests
 
-test: check-pdm
-	pdm run pytest
+test:
+	$(PYTHON) -m pytest
 
-lint: check-pdm
-	pdm run flake8 src tests
+build:
+	$(PYTHON) -m build
 
-format: check-pdm
-	pdm run black src tests
+dist: clean build
 
-build: check-pdm
-	pdm build
+install: clean
+	$(PYTHON) -m pip install -e .
 
-clean:
-	# purge PDM cache & lock
-	@command -v pdm >/dev/null 2>&1 && pdm cache purge || true
-	# remove lock file
-	rm -f python.lock
-	# remove build artifacts
-	rm -rf build dist *.egg-info
-	# remove pytest / pycache
-	rm -rf .pytest_cache
-	find . -type d -name "__pycache__" -exec rm -rf {} +
-	# remove any fixed schemas
-	rm -f spec/*_fixed.json
+publish: dist
+	$(PYTHON) -m twine check dist/*
+	$(PYTHON) -m twine upload dist/*
 
+dev-install:
+	$(PYTHON) -m pip install -e ".[dev]"
