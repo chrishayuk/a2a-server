@@ -3,9 +3,8 @@
 """
 A2A Client CLI
 
-Provides commands to send, get, cancel, and watch tasks via the A2A server
-transports.  Supports a --prefix argument to target different handler mounts
-(e.g. “pirate_agent” shorthand).
+Provides a rich, interactive command-line interface for the Agent-to-Agent protocol.
+Includes commands to send, get, cancel, and watch tasks via various A2A transports.
 """
 import argparse
 import sys
@@ -13,9 +12,18 @@ import uuid
 import asyncio
 import logging
 import json
-from typing import Optional
+import os
+import signal
+import atexit
+from typing import Optional, List, Dict, Any
 
-import httpx
+# Third-party imports
+import typer
+from rich import print
+from rich.console import Console
+from rich.panel import Panel
+
+# A2A client imports
 from a2a.client.a2a_client import A2AClient
 from a2a.json_rpc.spec import (
     TextPart,
@@ -27,36 +35,11 @@ from a2a.json_rpc.spec import (
     TaskArtifactUpdateEvent,
 )
 from a2a.json_rpc.json_rpc_errors import JSONRPCError
+from a2a.client.transport.stdio import JSONRPCStdioTransport
 
-# -----------------------------------------------------------------------------
-# Custom HTTP logger to debug request/response
-# -----------------------------------------------------------------------------
-class HTTPXLogger:
-    def __init__(self, level=logging.DEBUG):
-        self.logger = logging.getLogger("httpx")
-        self.level = level
-
-    def __call__(self, request):
-        async def on_response(response):
-            self.logger.log(
-                self.level,
-                f"HTTP Request: {request.method} {request.url} "
-                f"\"{response.status_code} {response.reason_phrase}\""
-            )
-            if self.level == logging.DEBUG:
-                self.logger.debug("Response headers: %s", response.headers)
-                ct = response.headers.get("content-type", "")
-                try:
-                    if "application/json" in ct:
-                        self.logger.debug("Response JSON: %s", response.json())
-                    elif "text/event-stream" in ct:
-                        self.logger.debug("SSE stream started")
-                    else:
-                        self.logger.debug("Response body: %.200s", response.text)
-                except Exception:
-                    self.logger.debug("Response body (unparsed): %.200s", response.text)
-            return response
-        return on_response
+# Local imports
+from a2a.client.chat.chat_handler import handle_chat_mode
+from a2a.client.ui.ui_helpers import display_task_info, restore_terminal, clear_screen
 
 # -----------------------------------------------------------------------------
 # Logging setup
@@ -64,37 +47,36 @@ class HTTPXLogger:
 def setup_logging(args):
     log_level = logging.DEBUG if args.debug else getattr(logging, args.log_level.upper())
     root_logger = logging.getLogger()
-    cli_logger  = logging.getLogger("a2a-client")
-    http_logger = logging.getLogger("httpx")
-    sse_logger  = logging.getLogger("a2a-client.sse")
+    cli_logger = logging.getLogger("a2a-client")
+    http_logger = logging.getLogger("httpx") if 'httpx' in sys.modules else None
+    sse_logger = logging.getLogger("a2a-client.sse")
 
-    fmt = "%(message)s"
+    fmt = "%(asctime)s - %(levelname)s - %(message)s" if args.debug else "%(message)s"
     console = logging.StreamHandler()
     console.setFormatter(logging.Formatter(fmt))
 
-    # base levels
+    # Base levels
     root_logger.setLevel(logging.WARNING)
     cli_logger.setLevel(log_level)
-    http_logger.setLevel(logging.WARNING if args.quiet else log_level)
+    if http_logger:
+        http_logger.setLevel(logging.WARNING if args.quiet else log_level)
     sse_logger.setLevel(logging.WARNING if args.quiet else log_level)
 
-    # clean handlers
-    for lg in (root_logger, cli_logger, http_logger, sse_logger):
+    # Clean handlers
+    for lg in [root_logger, cli_logger, sse_logger]:
         lg.handlers.clear()
         lg.addHandler(console)
-
-    # wire HTTPX hook for full request/response dumps
-    if args.debug:
-        httpx.Client(event_hooks={"response": [HTTPXLogger(logging.DEBUG)]})
-        httpx.AsyncClient(event_hooks={"response": [HTTPXLogger(logging.DEBUG)]})
+    if http_logger:
+        http_logger.handlers.clear()
+        http_logger.addHandler(console)
 
     return cli_logger
 
 # -----------------------------------------------------------------------------
 # Defaults for constructing endpoints
 # -----------------------------------------------------------------------------
-DEFAULT_HOST  = "http://localhost:8000"
-RPC_SUFFIX    = "/rpc"
+DEFAULT_HOST = "http://localhost:8000"
+RPC_SUFFIX = "/rpc"
 EVENTS_SUFFIX = "/events"
 
 # -----------------------------------------------------------------------------
@@ -111,102 +93,216 @@ def resolve_base(prefix: Optional[str]) -> str:
 # Connection validation
 # -----------------------------------------------------------------------------
 async def check_server_running(base_url: str, quiet: bool = False) -> bool:
-    async with httpx.AsyncClient() as client:
-        try:
-            await client.get(base_url, timeout=3.0)
-        except httpx.ConnectError:
-            if not quiet:
-                logging.getLogger("a2a-client").error(
-                    "Cannot connect to A2A server at %s", base_url
-                )
-            return False
-        except Exception as exc:
-            if not quiet:
-                logging.getLogger("a2a-client").warning(
-                    "Server check warning: %s", exc
-                )
-            return False
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            try:
+                await client.get(base_url, timeout=3.0)
+            except httpx.ConnectError:
+                if not quiet:
+                    logging.getLogger("a2a-client").error(
+                        "Cannot connect to A2A server at %s", base_url
+                    )
+                return False
+            except Exception as exc:
+                if not quiet:
+                    logging.getLogger("a2a-client").warning(
+                        "Server check warning: %s", exc
+                    )
+                return False
+    except ImportError:
+        logging.getLogger("a2a-client").warning(
+            "httpx not installed, skipping connection check"
+        )
     return True
 
 # -----------------------------------------------------------------------------
-# Helpers to format and print events & tasks
+# Signal handling and cleanup
 # -----------------------------------------------------------------------------
-def print_status(evt: TaskStatusUpdateEvent):
-    state = evt.status.state.value
-    msg = ""
-    if evt.status.message and evt.status.message.parts:
-        msg = f" — {evt.status.message.parts[0].text}"
-    print(f"[status] {state}{msg}")
+def restore_and_exit(signum=None, frame=None):
+    """Clean up and exit on signal."""
+    restore_terminal()
+    sys.exit(0)
 
-def print_artifact(evt: TaskArtifactUpdateEvent):
-    name = evt.artifact.name or "<unnamed>"
-    for part in evt.artifact.parts:
-        if hasattr(part, "text"):
-            print(f"[artifact:{name}] {part.text}")
+# Register cleanup on normal exit
+atexit.register(restore_terminal)
+
+# Register signal handlers
+signal.signal(signal.SIGINT, restore_and_exit)
+signal.signal(signal.SIGTERM, restore_and_exit)
+if hasattr(signal, "SIGQUIT"):
+    signal.signal(signal.SIGQUIT, restore_and_exit)
+
+# -----------------------------------------------------------------------------
+# Typer CLI app
+# -----------------------------------------------------------------------------
+app = typer.Typer(help="A2A Client CLI - Interactive client for the Agent-to-Agent protocol")
+
+@app.callback(invoke_without_command=True)
+def common_options(
+    ctx: typer.Context,
+    config_file: str = typer.Option(
+        "~/.a2a/config.json",
+        help="Path to configuration file with server definitions",
+    ),
+    server: str = typer.Option(
+        None,
+        help="Server URL or name from config (e.g. http://localhost:8000/chef_agent or pirate_agent)",
+    ),
+    debug: bool = typer.Option(
+        False,
+        help="Enable debug logging",
+    ),
+    quiet: bool = typer.Option(
+        False,
+        help="Suppress non-essential output",
+    ),
+    log_level: str = typer.Option(
+        "INFO",
+        help="Set the logging level. Options: DEBUG, INFO, WARNING, ERROR, CRITICAL",
+    ),
+):
+    """
+    A2A Client - Interactive CLI for the Agent-to-Agent protocol.
+
+    If no subcommand is provided, launches the interactive chat mode.
+    """
+    # Set up logging
+    numeric_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(numeric_level, int):
+        typer.echo(f"Invalid log level: {log_level}")
+        raise typer.Exit(1)
+    
+    # Create args object for logging setup
+    class Args:
+        pass
+    
+    args = Args()
+    args.debug = debug
+    args.quiet = quiet
+    args.log_level = log_level
+    
+    setup_logging(args)
+    
+    # Expand config file path
+    expanded_config = os.path.expanduser(config_file)
+    
+    # Get base URL from server parameter
+    base_url = None
+    if server:
+        if server.startswith(("http://", "https://")):
+            base_url = server
         else:
-            print(f"[artifact:{name}] {json.dumps(part.model_dump())}")
-
-def print_task_info(task, colorize=False):
-    print(f"Task ID: {task.id}")
-    state = task.status.state.value
-    print(f"Status : {state}")
-    if task.artifacts:
-        print("Artifacts:")
-        for art in task.artifacts:
-            print(f"  • {art.name or '<unnamed>'}")
-            for p in art.parts:
-                if getattr(p, "text", None):
-                    print(f"    {p.text}")
+            # Might be a server name from config, or a path shorthand
+            try:
+                if os.path.exists(expanded_config):
+                    with open(expanded_config, 'r') as f:
+                        config = json.load(f)
+                    
+                    servers = config.get("servers", {})
+                    if server in servers:
+                        base_url = servers[server]
+                    else:
+                        # Use as path component
+                        base_url = resolve_base(server)
+                else:
+                    # No config file, treat as path component
+                    base_url = resolve_base(server)
+            except Exception as e:
+                logging.getLogger("a2a-client").warning(f"Error processing server name: {e}")
+                base_url = resolve_base(server)
+    
+    # Store in context object
+    ctx.obj = {
+        "config_file": expanded_config,
+        "base_url": base_url,
+        "debug": debug,
+        "quiet": quiet,
+    }
+    
+    # If no subcommand specified, launch interactive mode
+    if ctx.invoked_subcommand is None:
+        try:
+            asyncio.run(handle_chat_mode(base_url, expanded_config))
+        except KeyboardInterrupt:
+            logging.getLogger("a2a-client").info("Chat interrupted")
+        except Exception as e:
+            logging.getLogger("a2a-client").error(f"Error in chat mode: {e}")
+        finally:
+            restore_terminal()
+        raise typer.Exit()
 
 # -----------------------------------------------------------------------------
-# Sub‑command implementations
+# Sub-commands for non-interactive use
 # -----------------------------------------------------------------------------
-def send_task(args):
-    base       = resolve_base(args.prefix)
-    rpc_url    = base + RPC_SUFFIX
+@app.command()
+def send(
+    text: str = typer.Argument(..., help="Text of the task to send"),
+    prefix: str = typer.Option(None, help="Handler mount or URL (e.g. pirate_agent or http://host:8000/chef_agent)"),
+    wait: bool = typer.Option(False, help="Wait and stream status/artifacts"),
+    color: bool = typer.Option(True, help="Colorize output"),
+):
+    """
+    Send a text task to the A2A server and optionally wait for results.
+    """
+    base = resolve_base(prefix)
+    rpc_url = base + RPC_SUFFIX
     events_url = base + EVENTS_SUFFIX
 
-    if not asyncio.run(check_server_running(base, args.quiet)):
-        sys.exit(1)
+    if not asyncio.run(check_server_running(base, quiet=False)):
+        raise typer.Exit(1)
 
-    client  = A2AClient.over_http(rpc_url)
-    part    = TextPart(type="text", text=args.text)
+    client = A2AClient.over_http(rpc_url)
+    part = TextPart(type="text", text=text)
     message = Message(role="user", parts=[part])
     task_id = str(uuid.uuid4())
-    params  = TaskSendParams(id=task_id, sessionId=None, message=message)
+    params = TaskSendParams(id=task_id, sessionId=None, message=message)
 
     try:
         task = asyncio.run(client.send_task(params))
-        if not args.quiet and not args.wait:
-            print_task_info(task, args.color)
-        if args.debug:
-            logging.getLogger("a2a-client").debug(
-                "Send response: %s", task.model_dump(by_alias=True)
-            )
+        
+        # Use rich formatting for the output
+        console = Console()
+        
+        if not wait:
+            display_task_info(task, color)
+        
+        logging.getLogger("a2a-client").debug(
+            "Send response: %s", json.dumps(task.model_dump(by_alias=True), indent=2)
+        )
     except JSONRPCError as exc:
         logging.getLogger("a2a-client").error("Send failed: %s", exc)
-        sys.exit(1)
-    except httpx.ConnectError:
-        logging.getLogger("a2a-client").error("Cannot connect to RPC at %s", rpc_url)
-        sys.exit(1)
+        raise typer.Exit(1)
+    except Exception as exc:
+        logging.getLogger("a2a-client").error("Cannot connect to RPC at %s: %s", rpc_url, exc)
+        raise typer.Exit(1)
 
     # Wait & stream
-    if args.wait:
+    if wait:
         sse_client = A2AClient.over_sse(rpc_url, events_url)
 
         async def _stream():
             try:
-                async for evt in sse_client.send_subscribe(params):
-                    if isinstance(evt, TaskStatusUpdateEvent):
-                        print_status(evt)
-                    elif isinstance(evt, TaskArtifactUpdateEvent):
-                        print_artifact(evt)
-                    else:
-                        print(json.dumps(evt, indent=2))
-                    if isinstance(evt, TaskStatusUpdateEvent) and evt.final:
-                        break
-            except Exception:
-                logging.getLogger("a2a-client").exception("Stream error")
+                from rich.live import Live
+                from rich.text import Text
+                from a2a.client.ui.ui_helpers import format_status_event, format_artifact_event
+                
+                console = Console()
+                
+                with Live("", refresh_per_second=4, console=console) as live:
+                    async for evt in sse_client.send_subscribe(params):
+                        if isinstance(evt, TaskStatusUpdateEvent):
+                            live.update(Text.from_markup(format_status_event(evt)))
+                            
+                            if evt.final:
+                                print(f"[green]Task {task_id} completed.[/green]")
+                                break
+                        elif isinstance(evt, TaskArtifactUpdateEvent):
+                            live.update(Text.from_markup(format_artifact_event(evt)))
+                        else:
+                            live.update(Text(f"Unknown event: {type(evt).__name__}"))
+            except Exception as e:
+                logging.getLogger("a2a-client").exception("Stream error: %s", e)
             finally:
                 if hasattr(sse_client.transport, "close"):
                     await sse_client.transport.close()
@@ -214,80 +310,128 @@ def send_task(args):
         try:
             asyncio.run(_stream())
         except KeyboardInterrupt:
-            if not args.quiet:
-                logging.getLogger("a2a-client").info("Stream interrupted")
+            logging.getLogger("a2a-client").info("Stream interrupted")
 
-def get_task(args):
-    base    = resolve_base(args.prefix)
+@app.command()
+def get(
+    id: str = typer.Argument(..., help="Task ID to fetch"),
+    prefix: str = typer.Option(None, help="Handler mount or URL"),
+    json_output: bool = typer.Option(False, "--json", help="Output full JSON"),
+    color: bool = typer.Option(True, help="Colorize output"),
+):
+    """
+    Fetch a task by ID.
+    """
+    base = resolve_base(prefix)
     rpc_url = base + RPC_SUFFIX
 
-    if not asyncio.run(check_server_running(base, args.quiet)):
-        sys.exit(1)
+    if not asyncio.run(check_server_running(base, quiet=False)):
+        raise typer.Exit(1)
 
     client = A2AClient.over_http(rpc_url)
-    params = TaskQueryParams(id=args.id)
+    # Create a proper TaskQueryParams object instead of a raw dict
+    params = TaskQueryParams(id=id)
 
     try:
         task = asyncio.run(client.get_task(params))
-        if args.json:
-            print(task.model_dump_json(indent=2, by_alias=True))
+        if json_output:
+            # Use rich for pretty JSON
+            from rich.json import JSON
+            console = Console()
+            console.print(JSON(task.model_dump_json(indent=2, by_alias=True)))
         else:
-            print_task_info(task, args.color)
+            display_task_info(task, color)
     except JSONRPCError as exc:
         logging.getLogger("a2a-client").error("Get failed: %s", exc)
-        sys.exit(1)
-    except httpx.ConnectError:
-        logging.getLogger("a2a-client").error("Cannot connect to RPC at %s", rpc_url)
-        sys.exit(1)
+        raise typer.Exit(1)
+    except Exception as exc:
+        logging.getLogger("a2a-client").error("Cannot connect to RPC at %s: %s", rpc_url, exc)
+        raise typer.Exit(1)
 
-def cancel_task(args):
-    base    = resolve_base(args.prefix)
+@app.command()
+def cancel(
+    id: str = typer.Argument(..., help="Task ID to cancel"),
+    prefix: str = typer.Option(None, help="Handler mount or URL"),
+):
+    """
+    Cancel a task by ID.
+    """
+    base = resolve_base(prefix)
     rpc_url = base + RPC_SUFFIX
 
-    if not asyncio.run(check_server_running(base, args.quiet)):
-        sys.exit(1)
+    if not asyncio.run(check_server_running(base, quiet=False)):
+        raise typer.Exit(1)
 
     client = A2AClient.over_http(rpc_url)
-    params = TaskIdParams(id=args.id)
+    # Create a proper TaskIdParams object instead of a raw dict
+    params = TaskIdParams(id=id)
 
     try:
         asyncio.run(client.cancel_task(params))
-        logging.getLogger("a2a-client").info("Canceled task %s", args.id)
+        console = Console()
+        console.print(f"[green]Canceled task {id}[/green]")
     except Exception as exc:
         logging.getLogger("a2a-client").error("Cancel failed: %s", exc)
-        sys.exit(1)
+        raise typer.Exit(1)
 
-def watch_task(args):
-    base       = resolve_base(args.prefix)
-    rpc_url    = base + RPC_SUFFIX
+@app.command()
+def watch(
+    id: str = typer.Argument(None, help="Existing task ID to watch"),
+    text: str = typer.Option(None, help="Text to send and watch new task"),
+    prefix: str = typer.Option(None, help="Handler mount or URL"),
+):
+    """
+    Watch task events via SSE.
+    
+    Either watch an existing task or send a new task and watch it.
+    """
+    base = resolve_base(prefix)
+    rpc_url = base + RPC_SUFFIX
     events_url = base + EVENTS_SUFFIX
 
-    if not asyncio.run(check_server_running(base, args.quiet)):
-        sys.exit(1)
+    if not asyncio.run(check_server_running(base, quiet=False)):
+        raise typer.Exit(1)
 
     client = A2AClient.over_sse(rpc_url, events_url)
 
     async def _watch():
-        if args.id:
-            iterator = client.resubscribe(TaskQueryParams(id=args.id))
-        else:
-            part    = TextPart(type="text", text=args.text)
+        if id:
+            # Watch existing task - using a proper TaskQueryParams object
+            iterator = client.resubscribe(TaskQueryParams(id=id))
+            print(f"Watching task {id}. Press Ctrl+C to stop...")
+        elif text:
+            # Send new task and watch it
+            part = TextPart(type="text", text=text)
             message = Message(role="user", parts=[part])
-            params  = TaskSendParams(id=str(uuid.uuid4()), sessionId=None, message=message)
+            task_id = str(uuid.uuid4())
+            params = TaskSendParams(id=task_id, sessionId=None, message=message)
+            print(f"Sending task {task_id} and watching updates. Press Ctrl+C to stop...")
             iterator = client.send_subscribe(params)
+        else:
+            print("[red]Error: Either --id or --text must be specified.[/red]")
+            return
 
         try:
-            async for evt in iterator:
-                if isinstance(evt, TaskStatusUpdateEvent):
-                    print_status(evt)
-                elif isinstance(evt, TaskArtifactUpdateEvent):
-                    print_artifact(evt)
-                else:
-                    print(json.dumps(evt, indent=2))
-                if isinstance(evt, TaskStatusUpdateEvent) and evt.final:
-                    break
-        except Exception:
-            logging.getLogger("a2a-client").exception("Watch error")
+            from rich.live import Live
+            from rich.text import Text
+            from a2a.client.ui.ui_helpers import format_status_event, format_artifact_event
+            
+            console = Console()
+            
+            with Live("", refresh_per_second=4, console=console) as live:
+                async for evt in iterator:
+                    if isinstance(evt, TaskStatusUpdateEvent):
+                        live.update(Text.from_markup(format_status_event(evt)))
+                        
+                        if evt.final:
+                            print(f"[green]Task completed.[/green]")
+                            break
+                    elif isinstance(evt, TaskArtifactUpdateEvent):
+                        live.update(Text.from_markup(format_artifact_event(evt)))
+                    else:
+                        live.update(Text(f"Unknown event: {type(evt).__name__}"))
+        except Exception as e:
+            logging.getLogger("a2a-client").exception("Watch error: %s", e)
         finally:
             if hasattr(client.transport, "close"):
                 await client.transport.close()
@@ -295,57 +439,164 @@ def watch_task(args):
     try:
         asyncio.run(_watch())
     except KeyboardInterrupt:
-        if not args.quiet:
-            logging.getLogger("a2a-client").info("Watch interrupted")
+        logging.getLogger("a2a-client").info("Watch interrupted")
+
+@app.command()
+def chat(
+    config_file: str = typer.Option(
+        "~/.a2a/config.json",
+        help="Path to configuration file",
+    ),
+    server: str = typer.Option(
+        None,
+        help="Server URL or name",
+    ),
+):
+    """
+    Start interactive chat mode.
+    """
+    # Expand config file path
+    expanded_config = os.path.expanduser(config_file)
+    
+    # Get base URL from server parameter
+    base_url = None
+    if server:
+        if server.startswith(("http://", "https://")):
+            base_url = server
+        else:
+            # Might be a server name from config, or a path shorthand
+            try:
+                if os.path.exists(expanded_config):
+                    with open(expanded_config, 'r') as f:
+                        config = json.load(f)
+                    
+                    servers = config.get("servers", {})
+                    if server in servers:
+                        base_url = servers[server]
+                    else:
+                        # Use as path component
+                        base_url = resolve_base(server)
+                else:
+                    # No config file, treat as path component
+                    base_url = resolve_base(server)
+            except Exception as e:
+                logging.getLogger("a2a-client").warning(f"Error processing server name: {e}")
+                base_url = resolve_base(server)
+    
+    try:
+        asyncio.run(handle_chat_mode(base_url, expanded_config))
+    except KeyboardInterrupt:
+        logging.getLogger("a2a-client").info("Chat interrupted")
+    except Exception as e:
+        logging.getLogger("a2a-client").error(f"Error in chat mode: {e}")
+    finally:
+        restore_terminal()
+
+@app.command()
+def stdio():
+    """
+    Run in stdio mode, acting as a JSON-RPC transport over stdin/stdout.
+    
+    This allows the client to be used as a subprocess-based agent.
+    """
+    # Create a client with stdio transport
+    client = A2AClient.over_stdio()
+    
+    async def _run_stdio():
+        try:
+            logging.getLogger("a2a-client").info("Starting stdio mode, waiting for JSON-RPC input...")
+            
+            # Process incoming messages
+            async for message in client.transport.stream():
+                # Only process valid JSON-RPC requests
+                if not isinstance(message, dict) or "method" not in message:
+                    continue
+                
+                method = message.get("method")
+                params = message.get("params", {})
+                req_id = message.get("id")
+                
+                try:
+                    # Route to appropriate method
+                    if method == "tasks/send":
+                        from a2a.json_rpc.spec import TaskSendParams
+                        task_params = TaskSendParams.model_validate(params)
+                        result = await client.send_task(task_params)
+                        response = {
+                            "jsonrpc": "2.0",
+                            "result": result.model_dump(by_alias=True),
+                            "id": req_id
+                        }
+                        print(json.dumps(response), flush=True)
+                    
+                    elif method == "tasks/get":
+                        from a2a.json_rpc.spec import TaskQueryParams
+                        task_params = TaskQueryParams.model_validate(params)
+                        result = await client.get_task(task_params)
+                        response = {
+                            "jsonrpc": "2.0",
+                            "result": result.model_dump(by_alias=True),
+                            "id": req_id
+                        }
+                        print(json.dumps(response), flush=True)
+                    
+                    elif method == "tasks/cancel":
+                        from a2a.json_rpc.spec import TaskIdParams
+                        task_params = TaskIdParams.model_validate(params)
+                        await client.cancel_task(task_params)
+                        response = {
+                            "jsonrpc": "2.0",
+                            "result": None,
+                            "id": req_id
+                        }
+                        print(json.dumps(response), flush=True)
+                    
+                    elif req_id is not None:
+                        # Unknown method with ID - return error
+                        response = {
+                            "jsonrpc": "2.0",
+                            "error": {
+                                "code": -32601,
+                                "message": f"Method not found: {method}"
+                            },
+                            "id": req_id
+                        }
+                        print(json.dumps(response), flush=True)
+                
+                except Exception as e:
+                    if req_id is not None:
+                        error_response = {
+                            "jsonrpc": "2.0",
+                            "error": {
+                                "code": -32000,
+                                "message": str(e)
+                            },
+                            "id": req_id
+                        }
+                        print(json.dumps(error_response), flush=True)
+        
+        except KeyboardInterrupt:
+            logging.getLogger("a2a-client").info("Stdio mode interrupted")
+        except Exception as e:
+            logging.getLogger("a2a-client").error(f"Error in stdio mode: {e}")
+    
+    try:
+        asyncio.run(_run_stdio())
+    except Exception as e:
+        logging.getLogger("a2a-client").error(f"Fatal error in stdio mode: {e}")
 
 # -----------------------------------------------------------------------------
-# CLI wiring
+# Script entry‑point
 # -----------------------------------------------------------------------------
-def main():
-    parser = argparse.ArgumentParser(prog="a2a-client")
-    parser.add_argument("--debug", action="store_true", help="Enable HTTPX wire‑level logging")
-    parser.add_argument("--log-level", choices=["debug","info","warning","error"], default="info",
-                        help="Client logging level")
-    parser.add_argument("--quiet", "-q", action="store_true", help="Suppress non‑essential output")
-    parser.add_argument("--color", action="store_true", help="Colorize output")
-
-    sub = parser.add_subparsers(dest="cmd")
-
-    p_send = sub.add_parser("send", help="Send a text task")
-    p_send.add_argument("--prefix", default=None,
-                        help="Handler mount or URL (e.g. pirate_agent or http://host:8000/chef_agent)")
-    p_send.add_argument("text", help="Text of the task to send")
-    p_send.add_argument("--wait", action="store_true", help="Wait and stream status/artifacts")
-    p_send.set_defaults(func=send_task)
-
-    p_get = sub.add_parser("get", help="Fetch a task by ID")
-    p_get.add_argument("--prefix", default=None, help="Handler mount or URL")
-    p_get.add_argument("id", help="Task ID to fetch")
-    p_get.add_argument("--json", action="store_true", help="Output full JSON")
-    p_get.set_defaults(func=get_task)
-
-    p_cancel = sub.add_parser("cancel", help="Cancel a task")
-    p_cancel.add_argument("--prefix", default=None, help="Handler mount or URL")
-    p_cancel.add_argument("id", help="Task ID to cancel")
-    p_cancel.set_defaults(func=cancel_task)
-
-    p_watch = sub.add_parser("watch", help="Watch task events via SSE")
-    p_watch.add_argument("--prefix", default=None, help="Handler mount or URL")
-    group = p_watch.add_mutually_exclusive_group(required=True)
-    group.add_argument("--id", help="Existing task ID to watch")
-    group.add_argument("--text", help="Text to send and watch new task")
-    p_watch.set_defaults(func=watch_task)
-
-    args = parser.parse_args()
-    args.color = args.color or sys.stdout.isatty()
-
-    setup_logging(args)
-
-    if not hasattr(args, "func"):
-        parser.print_help()
-        sys.exit(1)
-    args.func(args)
-
-
 if __name__ == "__main__":
-    main()
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+    try:
+        app()
+    except KeyboardInterrupt:
+        logging.debug("KeyboardInterrupt received")
+    except Exception as exc:
+        logging.error("Unhandled exception: %s", exc)
+    finally:
+        restore_terminal()

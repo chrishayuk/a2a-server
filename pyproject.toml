@@ -12,7 +12,10 @@ requires-python = ">=3.11"
 # runtime dependencies
 dependencies = [
   "asyncio>=3.4.3",
+  "prompt-toolkit>=3.0.51",
   "pydantic>=2.11.3",
+  "rich>=14.0.0",
+  "typer>=0.15.2",
 ]
 
 # optional feature sets
@@ -60,7 +63,7 @@ test            = "pytest"
 
 [project.scripts]
 a2a-server = "a2a.server.__main__:main"
-a2a-client = "a2a.client.cli:main"
+a2a-client = "a2a.client.cli:app"
 
 # pytest settings so it finds your src/ layout automatically
 [tool.pytest.ini_options]

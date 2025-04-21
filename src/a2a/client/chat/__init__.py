@@ -1,0 +1,1 @@
+# a2a/client/chat/__init__.py
