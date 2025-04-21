@@ -1,1 +1,0 @@
-# File: a2a/server/sample_agents/__init__.py

@@ -3,7 +3,7 @@ requires    = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name            = "chuk-a2a"
+name            = "a2a-server"
 version         = "0.1.0"
 description     = "In‑memory FSM for the A2A Protocol with Pydantic v2 models"
 readme          = "README.md"
@@ -11,59 +11,38 @@ requires-python = ">=3.11"
 
 # runtime dependencies
 dependencies = [
+  "a2a-json-rpc>=0.1.3",
   "asyncio>=3.4.3",
-  "prompt-toolkit>=3.0.51",
   "pydantic>=2.11.3",
-  "rich>=14.0.0",
-  "typer>=0.15.2",
-]
-
-# optional feature sets
-[project.optional-dependencies]
-jsonrpc = [
-  "pydantic>=2.11.3",
-]
-server = [
   "fastapi>=0.115.12",
   "uvicorn>=0.34.1",
   "httpx>=0.28.1",
   "pyyaml>=6.0.2",
-]
-client = [
-  "httpx>=0.28.1",
-  "click>=8.0",
-  "pyyaml>=6.0.2",
-]
-adk = [
   "google-adk>=0.2.0",
   "litellm>=1.66.3",
 ]
-full = [
-  "chuk-a2a[jsonrpc,server,client,adk]",
-]
 
+# optional feature sets
+[project.optional-dependencies]
 dev = [
   "pytest>=7.0.0",
-  "pytest-asyncio>=0.20.0",
-  "datamodel-code-generator>=0.25.8",
+  "pytest-asyncio>=0.20.0"
 ]
 
 # Tell setuptools to look in src/ for your a2a package
 [tool.setuptools.packages.find]
 where   = ["src"]
-include = ["a2a"]
+include = ["a2a_server*"]
 
 [tool.pdm]
 python_requires = ">=3.11"
 
 # Convenient CLI shortcuts
 [tool.pdm.scripts]
-generate-models = "bash scripts/generate_models.sh"
 test            = "pytest"
 
 [project.scripts]
-a2a-server = "a2a.server.__main__:main"
-a2a-client = "a2a.client.cli:app"
+a2a-server = "a2a_server.__main__:main"
 
 # pytest settings so it finds your src/ layout automatically
 [tool.pytest.ini_options]

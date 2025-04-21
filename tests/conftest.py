@@ -2,7 +2,7 @@
 import pytest
 import pytest_asyncio
 import asyncio
-from a2a.server.methods import cancel_pending_tasks
+from a2a_server.methods import cancel_pending_tasks
 
 @pytest_asyncio.fixture(scope="function", autouse=True)
 async def cleanup_background_tasks():

@@ -10,11 +10,11 @@ flag is needed.
 import uvicorn
 
 # a2a imports
-from a2a.server.app import create_app
-from a2a.server.tasks.handlers.google_adk_handler import GoogleADKHandler
+from a2a_server.app import create_app
+from a2a_server.tasks.handlers.google_adk_handler import GoogleADKHandler
 
 # import the sample agent
-from a2a.server.sample_agents.pirate_agent import pirate_agent as agent
+from a2a_server.sample_agents.pirate_agent import pirate_agent as agent
 
 # constants
 HOST = "0.0.0.0"

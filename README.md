@@ -80,8 +80,8 @@ handlers:
   default: chef_agent
 
   pirate_agent:
-    type: a2a.server.tasks.handlers.google_adk_handler.GoogleADKHandler
-    agent: a2a.server.sample_agents.pirate_agent.pirate_agent
+    type: a2a_server.tasks.handlers.google_adk_handler.GoogleADKHandler
+    agent: a2a_server.sample_agents.pirate_agent.pirate_agent
     name: pirate_agent
     agent_card:
       name: Pirate Agent
@@ -113,8 +113,8 @@ handlers:
             - "Arrr! Give me yer loot!"
 
   chef_agent:
-    type: a2a.server.tasks.handlers.google_adk_handler.GoogleADKHandler
-    agent: a2a.server.sample_agents.chef_agent.chef_agent
+    type: a2a_server.tasks.handlers.google_adk_handler.GoogleADKHandler
+    agent: a2a_server.sample_agents.chef_agent.chef_agent
     name: chef_agent
     agent_card:
       name: Chef Agent
