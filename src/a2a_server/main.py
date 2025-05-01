@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# a2a_server/__main__.py
+# a2a_server/main.py
 """
 CLI entrypoint for a2a-server: delegates to run.py's run_server.
 """
