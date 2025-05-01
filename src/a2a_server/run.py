@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 # a2a_server/run.py
 """
-Simplified entry point for A2A server with YAML configuration support and agent cards.
+CLI entry point for the A2A server.
+
+Reads YAML config, optional CLI flags, then launches Uvicorn with sensible
+defaults for container / PaaS environments.
 """
+
+from __future__ import annotations
+
 import logging
+import os
 
 import uvicorn
 from fastapi import FastAPI
@@ -15,12 +22,13 @@ from a2a_server.logging import configure_logging
 from a2a_server.app import create_app
 
 
-def run_server():
+def run_server() -> None:
     # ── Parse CLI args ──────────────────────────────────────────────
     args = parse_args()
 
-    # ── Load & override config ──────────────────────────────────────
+    # ── Load config & apply CLI overrides ───────────────────────────
     cfg = load_config(args.config)
+
     if args.log_level:
         cfg["logging"]["level"] = args.log_level
     if args.handler_packages:
@@ -28,7 +36,7 @@ def run_server():
     if args.no_discovery:
         cfg["handlers"]["use_discovery"] = False
 
-    # ── Logging ─────────────────────────────────────────────────────
+    # ── Logging setup ───────────────────────────────────────────────
     L = cfg["logging"]
     configure_logging(
         level_name=L["level"],
@@ -37,18 +45,16 @@ def run_server():
         quiet_modules=L.get("quiet_modules", {}),
     )
 
-    # ── Handlers setup ──────────────────────────────────────────────
+    # ── Handlers ----------------------------------------------------
     handlers_cfg = cfg["handlers"]
     all_handlers, default_handler = setup_handlers(handlers_cfg)
     use_discovery = handlers_cfg.get("use_discovery", True)
 
-    # Promote default to front
-    if default_handler:
-        handlers_list = [default_handler] + [
-            h for h in all_handlers if h is not default_handler
-        ]
-    else:
-        handlers_list = all_handlers or None
+    handlers_list = (
+        [default_handler] + [h for h in all_handlers if h is not default_handler]
+        if default_handler
+        else all_handlers or None
+    )
 
     # ── Build FastAPI app ───────────────────────────────────────────
     app: FastAPI = create_app(
@@ -62,20 +68,27 @@ def run_server():
         openapi_url=None,
     )
 
-    # ── Optionally list all routes ──────────────────────────────────
     if args.list_routes:
         for route in app.routes:
             if hasattr(route, "path"):
                 print(route.path)
 
     # ── Launch Uvicorn ──────────────────────────────────────────────
-    host = cfg["server"].get("host", "127.0.0.1")
-    port = cfg["server"].get("port", 8000)
-    logging.info(f"Starting A2A server on http://{host}:{port}")
-    uvicorn.run(app, host=host, port=port, log_level=L["level"])
+    host = cfg["server"].get("host", "0.0.0.0")          # 0.0.0.0 for Fly
+    # Fly injects the port it proxies to via $PORT
+    port = int(os.getenv("PORT", cfg["server"].get("port", 8000)))
+
+    logging.info("Starting A2A server on http://%s:%s", host, port)
+
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level=L["level"].lower(),
+        proxy_headers=True,                              # ← honours X-Forwarded-*
+        forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "*"),
+    )
 
 
 if __name__ == "__main__":
-    # run the server
     run_server()
-

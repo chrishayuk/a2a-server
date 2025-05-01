@@ -1,0 +1,32 @@
+{
+    "name": "Chef Agent",
+    "description": "Suggests delicious recipes from your ingredients",
+    "url": "https://a2a-server.fly.dev/chef_agent",
+    "version": "0.1.0",
+    "documentation_url": "https://chef.example.com/docs",
+    "capabilities": {
+        "streaming": true,
+        "push_notifications": false,
+        "state_transition_history": false
+    },
+    "default_input_modes": [
+        "text/plain"
+    ],
+    "default_output_modes": [
+        "text/plain"
+    ],
+    "skills": [
+        {
+            "id": "recipe-generation",
+            "name": "Recipe Generation",
+            "description": "Suggest recipes based on ingredients",
+            "tags": [
+                "cooking",
+                "recipes"
+            ],
+            "examples": [
+                "What can I make with chicken, mushrooms, and rice?"
+            ]
+        }
+    ]
+}

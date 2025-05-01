@@ -1,10 +1,11 @@
 # agent.yaml
 server:
+  host: 0.0.0.0
   port: 8000
 
 handlers:
   use_discovery: false
-  default: chef_agent
+  default: pirate_agent
 
   pirate_agent:
     type: a2a_server.tasks.handlers.google_adk_handler.GoogleADKHandler
@@ -13,12 +14,12 @@ handlers:
     agent_card:
       name: Pirate Agent
       description: "Converts your text into salty pirate‑speak"
-      url: "https://pirate.example.com"
+      url: "https://a2a-server.fly.dev/pirate_agent"
       version: "0.1.0"
-      documentationUrl: "https://pirate.example.com/docs"
+      documentationUrl: "https://a2a-server.fly.dev/pirate_agent/docs"
       provider:
-        organization: "Acme"
-        url: "https://acme.example.com"
+        organization: "chrishayuk"
+        url: "https://chrishayuk.io"
       capabilities:
         streaming: true
         pushNotifications: false
@@ -46,12 +47,12 @@ handlers:
     agent_card:
       name: Chef Agent
       description: "Suggests delicious recipes from your ingredients"
-      url: "https://chef.example.com"
+      url: "https://a2a-server.fly.dev/chef_agent"
       version: "0.1.0"
-      documentationUrl: "https://chef.example.com/docs"
+      documentationUrl: "https://a2a-server.fly.dev/chef_agent/docs"
       provider:
-        organization: "Acme"
-        url: "https://acme.example.com"
+        organization: "chrishayuk"
+        url: "https://chrishayuk.io"
       capabilities:
         streaming: true
         pushNotifications: false

@@ -1,0 +1,32 @@
+{
+    "name": "Pirate Agent",
+    "description": "Converts your text into pirate-speak",
+    "url": "https://a2a-server.fly.dev/pirate_agent",
+    "version": "0.1.0",
+    "documentation_url": "https://a2a-server.fly.dev/pirate_agent/docs",
+    "capabilities": {
+        "streaming": true,
+        "push_notifications": false,
+        "state_transition_history": false
+    },
+    "default_input_modes": [
+        "text/plain"
+    ],
+    "default_output_modes": [
+        "text/plain"
+    ],
+    "skills": [
+        {
+            "id": "pirate-talk",
+            "name": "Pirate Talk",
+            "description": "Turn any message into pirate lingo",
+            "tags": [
+                "pirate",
+                "fun"
+            ],
+            "examples": [
+                "Arrr! Give me yer loot!"
+            ]
+        }
+    ]
+}

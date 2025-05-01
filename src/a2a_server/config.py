@@ -5,7 +5,7 @@ from typing import Dict, Any, List, Optional
 
 DEFAULT_CONFIG = {
     "server": {
-        "host": "127.0.0.1",
+        "host": "0.0.0.0",
         "port": 8000,
     },
     "logging": {
