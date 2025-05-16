@@ -26,7 +26,7 @@ def create_agent_card(
     cfg = handler_cfg.get("agent_card", {})
 
     # canonical URLs ----------------------------------------------------------
-    handler_root = f"{base_url}/{handler_name}"          # <── used for `url`
+    handler_root = handler_root = cfg.get("url") or f"{base_url}/{handler_name}"
     # ------------------------------------------------------------------------
 
     # capabilities
