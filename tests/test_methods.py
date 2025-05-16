@@ -1,4 +1,4 @@
-# File: tests/server/test_methods.py
+# File: tests/test_methods.py
 import pytest
 import json
 from pydantic import ValidationError
