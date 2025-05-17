@@ -10,7 +10,7 @@ Key points
 ----------
 * `_rpc` decorator centralises logging **and** Pydantic validation so each
   handler is tiny.
-* We no longer keep our own WeakSet of background jobs – the revamped
+* We no longer keep our own WeakSet of background jobs - the revamped
   `TaskManager` already runs every task inside its **asyncio.TaskGroup** and
   exposes `shutdown()` for cleanup.
 * `cancel_pending_tasks()` is therefore a thin wrapper that simply calls
@@ -70,7 +70,7 @@ def cancel_pending_tasks(tm: TaskManager | None = None) -> asyncio.Task[Any]:  #
             for c in containers:
                 c.clear()
 
-        # 2. ask the TaskManager to shut down – this takes care of everything
+        # 2. ask the TaskManager to shut down - this takes care of everything
         if tm is not None:
             await tm.shutdown()
 
@@ -113,7 +113,7 @@ def register_methods(protocol: JSONRPCProtocol, manager: TaskManager) -> None:
     async def _get(_: str, q: TaskQueryParams, __):  # noqa: D401, ANN001
         try:
             task = await manager.get_task(q.id)
-        except TaskNotFound as err:  # pragma: no cover – validated tests catch
+        except TaskNotFound as err:  # pragma: no cover - validated tests catch
             raise RuntimeError(f"TaskNotFound: {err}") from err
         return Task.model_validate(task.model_dump()).model_dump(exclude_none=True, by_alias=True)
 

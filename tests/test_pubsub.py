@@ -17,7 +17,7 @@ async def test_publish_to_all_subscribers():
     payload = {"msg": "hello"}
     await bus.publish(payload)
 
-    assert await q1.get() is payload  # identity check – same object
+    assert await q1.get() is payload  # identity check - same object
     assert await q2.get() is payload
 
 
@@ -45,7 +45,7 @@ async def test_slow_consumer_does_not_block_others():
 
     fast = bus.subscribe()
 
-    # Slow consumer – bounded queue size 1 and pre-filled to force full state.
+    # Slow consumer - bounded queue size 1 and pre-filled to force full state.
     slow: asyncio.Queue = asyncio.Queue(maxsize=1)
     await slow.put("prefill")
     bus._queues.append(slow)

@@ -46,7 +46,7 @@ async def _create_task(
     """
     Helper that copes with both “new” and “legacy” TaskManager signatures.
 
-    Returns ``(task, real_id, client_id)`` – where *real_id* is whatever the
+    Returns ``(task, real_id, client_id)`` - where *real_id* is whatever the
     TaskManager ultimately assigned and *client_id* is the alias we’ll use on
     the wire.
     """
@@ -73,7 +73,7 @@ async def _create_task(
     )
     server_id = task.id
     if client_id and client_id != server_id:
-        async with tm._lock:  # noqa: SLF001 – internal but harmless here
+        async with tm._lock:  # noqa: SLF001 - internal but harmless here
             tm._aliases[client_id] = server_id  # type: ignore[attr-defined]
     else:
         client_id = server_id

@@ -90,7 +90,7 @@ def _iter_entry_points() -> Iterator[types.SimpleNamespace]:
     Unified helper that yields entry-points regardless of Python version /
     availability of importlib.metadata.
     """
-    # Python ≥ 3.10 – importlib.metadata is in stdlib
+    # Python ≥ 3.10 - importlib.metadata is in stdlib
     try:
         from importlib.metadata import entry_points
 
@@ -99,13 +99,13 @@ def _iter_entry_points() -> Iterator[types.SimpleNamespace]:
     except Exception:  # pragma: no cover  pylint: disable=broad-except
         pass
 
-    # Older Pythons – fall back to setuptools’ pkg_resources
+    # Older Pythons - fall back to setuptools’ pkg_resources
     try:
         import pkg_resources
 
         yield from pkg_resources.iter_entry_points(group="a2a.task_handlers")
     except Exception:  # pragma: no cover  pylint: disable=broad-except
-        logger.debug("pkg_resources unavailable – skipping entry-point discovery")
+        logger.debug("pkg_resources unavailable - skipping entry-point discovery")
 
 
 def load_handlers_from_entry_points() -> Iterator[Type[TaskHandler]]:
@@ -140,7 +140,7 @@ def load_handlers_from_entry_points() -> Iterator[Type[TaskHandler]]:
             logger.warning("Failed to load handler from entry-point %s: %s", ep.name, exc)
 
     logger.debug(
-        "Checked %d entry-points in group 'a2a.task_handlers' – %d handlers loaded",
+        "Checked %d entry-points in group 'a2a.task_handlers' - %d handlers loaded",
         eps_scanned,
         handlers_found,
     )

@@ -23,7 +23,7 @@ __all__ = ["_build_app", "_serve", "run_server"]
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_app(cfg: dict, args) -> FastAPI:  # noqa: ANN001 – CLI helper
+def _build_app(cfg: dict, args) -> FastAPI:  # noqa: ANN001 - CLI helper
     """Instantiate a FastAPI app with handlers resolved from *cfg*."""
     handlers_cfg = cfg["handlers"]
 
@@ -64,7 +64,7 @@ async def _serve(app: FastAPI, host: str, port: int, log_level: str) -> None:
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
 
-    def _graceful_exit(*_: object) -> None:  # noqa: D401, ANN001 – signal handler
+    def _graceful_exit(*_: object) -> None:  # noqa: D401, ANN001 - signal handler
         if not server.should_exit:
             server.should_exit = True
         stop.set()

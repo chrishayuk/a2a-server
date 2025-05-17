@@ -55,7 +55,7 @@ def test_console_exporter_called(monkeypatch):
     app = FastAPI()
 
     @app.get("/hello")
-    async def _hello():  # noqa: D401 – dummy route
+    async def _hello():  # noqa: D401 - dummy route
         return {"ok": True}
 
     metrics_mod.instrument_app(app)

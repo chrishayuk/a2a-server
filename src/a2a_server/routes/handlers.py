@@ -17,7 +17,7 @@ def register_handler_routes(
     task_manager,
     handlers_config: dict
 ):
-    # per–handler GET health and streaming
+    # per-handler GET health and streaming
     for handler_name in task_manager.get_handlers().keys():
         async def _handler_health(
             request: Request,

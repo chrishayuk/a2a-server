@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# debug_scripts/debug_smoke_test.sh.sh – smoke-test for a2a-server with Prometheus metrics
+# debug_scripts/debug_smoke_test.sh.sh - smoke-test for a2a-server with Prometheus metrics
 set -euo pipefail
 
 CFG=${1:-agent.yaml}
@@ -12,12 +12,12 @@ log()  { cyan "[$(date +%T)] $*"; }
 
 # ── 1 · ensure port free ────────────────────────────────────────────────
 if lsof -Pi :"$PORT" -sTCP:LISTEN -t &>/dev/null; then
-  log "Port $PORT busy – killing existing Uvicorn process"
+  log "Port $PORT busy - killing existing Uvicorn process"
   pkill -f "uvicorn.*a2a_server" || true
   sleep 1
 fi
 
-# ── 2 · env – pull mode only ────────────────────────────────────────────
+# ── 2 · env - pull mode only ────────────────────────────────────────────
 export PROMETHEUS_METRICS=true
 unset OTEL_EXPORTER_OTLP_ENDPOINT
 
@@ -56,4 +56,4 @@ done || { log "❌ /metrics never became available"; exit 1; }
 log "Fetching $METRICS_PATH (first 15 lines)"
 curl -s "http://$HOST:$PORT$METRICS_PATH" | head -n 15
 
-log "✅ Done – full server log saved to server.log"
+log "✅ Done - full server log saved to server.log"

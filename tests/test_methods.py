@@ -38,7 +38,7 @@ def _json_rpc(id_: str, method: str, params: Dict[str, Any] | None = None) -> JS
 async def _call(proto: JSONRPCProtocol, req: JSONRPCRequest):  # noqa: ANN001
     """Round-trip *req* through *proto* and return the *result* field."""
     raw = await proto._handle_raw_async(req.model_dump())
-    if raw is None:  # Notification path – directly call registered handler
+    if raw is None:  # Notification path - directly call registered handler
         handler = proto._methods[req.method]  # type: ignore[attr-defined]
         return await handler(req.method, req.params or {})
 
