@@ -1,4 +1,4 @@
-# In tests/server/transport/test_stdio.py
+# In tests/transport/test_stdio.py
 
 import pytest
 import json

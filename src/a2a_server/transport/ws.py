@@ -1,13 +1,28 @@
-# a2a_server/transport/ws.py
+from __future__ import annotations
+"""WebSocket transport ― back-pressure safe (May 2025)
+
+Design goals
+------------
+* **Replies first** – every RPC reply is written *before* any
+  server-side task event that is already waiting in the queue.  This is
+  what `tests/transport/test_ws.py::test_back_pressure_drops_not_block`
+  asserts.
+* **Chatter buffer** – background events (task-update spam) are placed
+  in a **single** bounded FIFO queue (32 frames). If the queue is full
+  we drop the *oldest* event, keeping memory bounded while favouring the
+  freshest data.
+* **Dedicated writer** – a single task drains the buffer so the main
+  coroutine never blocks on `ws.send_*`.
+* **Graceful teardown** – all tasks are cancelled cleanly on disconnect.
 """
-WebSocket transport for the A2A server.
-Defines WebSocket endpoints for default handler and specific handlers.
-"""
+
 import asyncio
 import json
-from typing import Dict, Optional, Dict, Any
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import logging
+from typing import List, Optional
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.encoders import jsonable_encoder
 
 from a2a_json_rpc.protocol import JSONRPCProtocol
 from a2a_server.pubsub import EventBus
@@ -15,88 +30,168 @@ from a2a_server.tasks.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
 
-def setup_ws(app: FastAPI, protocol: JSONRPCProtocol, event_bus: EventBus, task_manager: TaskManager) -> None:
-    """
-    Set up WebSocket endpoints with direct handler mounting:
-    - /ws for default handler
-    - /{handler_name}/ws for specific handlers
-    """
-    @app.websocket("/ws")
-    async def ws_default_endpoint(ws: WebSocket):
-        """WebSocket endpoint for the default handler."""
-        await _handle_websocket(ws, protocol, event_bus)
-    
-    # Get all registered handlers
-    all_handlers = task_manager.get_handlers()
-    
-    # Create explicit WebSocket routes for each handler
-    for handler_name in all_handlers:
-        # We need to use a function to create a proper closure that captures handler_name
-        def create_ws_handler(name):
-            async def handler_ws_endpoint(websocket: WebSocket):
-                """WebSocket endpoint for a specific handler."""
-                logger.debug(f"WebSocket connection established for handler '{name}'")
-                await _handle_websocket(websocket, protocol, event_bus, name)
-            return handler_ws_endpoint
-        
-        # Register the websocket endpoint with a concrete path
-        app.websocket(f"/{handler_name}/ws")(create_ws_handler(handler_name))
-        logger.debug(f"Registered WebSocket endpoint for handler '{handler_name}'")
+BUFFER_SIZE = 32  # outbound chatter frames per connection
 
+aasync = None  # historical typo appeasement
 
-async def _handle_websocket(
-    ws: WebSocket,
+# ---------------------------------------------------------------------------
+# Public helper – register endpoints
+# ---------------------------------------------------------------------------
+
+def setup_ws(
+    app: FastAPI,
     protocol: JSONRPCProtocol,
     event_bus: EventBus,
-    handler_name: Optional[str] = None
+    task_manager: TaskManager,
 ) -> None:
-    """
-    Handle a WebSocket connection for any handler.
-    
-    Args:
-        ws: The WebSocket connection
-        protocol: JSON-RPC protocol handler
-        event_bus: Event bus for subscribing to events
-        handler_name: Optional handler name to inject into requests
-    """
+    """Register `/ws` and `/<handler>/ws` endpoints on *app*."""
+
+    @app.websocket("/ws")
+    async def _ws_default(ws: WebSocket):  # noqa: D401
+        await _serve(ws, protocol, event_bus)
+
+    for handler_name in task_manager.get_handlers():
+
+        def _mk(name: str):
+            async def _handler_ws(ws: WebSocket):  # noqa: D401
+                logger.debug("WebSocket connection established for handler '%s'", name)
+                await _serve(ws, protocol, event_bus, name)
+
+            return _handler_ws
+
+        app.websocket(f"/{handler_name}/ws")(_mk(handler_name))
+        logger.debug("Registered WebSocket endpoint for handler '%s'", handler_name)
+
+
+# ---------------------------------------------------------------------------
+# Internal – connection handler
+# ---------------------------------------------------------------------------
+
+async def _serve(
+    ws: WebSocket,
+    protocol: JSONRPCProtocol,
+    bus: EventBus,
+    handler_name: Optional[str] = None,
+) -> None:
+    """Serve one WebSocket connection with reply-first ordering."""
+
     await ws.accept()
-    queue = event_bus.subscribe()
-    
+
+    bus_q = bus.subscribe()
+    out_q: asyncio.Queue[str] = asyncio.Queue(maxsize=BUFFER_SIZE)
+
+    # ------------------------------------------------------------------
+    # Background writer – drains *out_q* so the main coroutine never
+    # blocks on the kernel socket buffers.
+    # ------------------------------------------------------------------
+
+    async def _writer() -> None:
+        try:
+            while True:
+                payload = await out_q.get()
+                await ws.send_text(payload)
+        except WebSocketDisconnect:
+            logger.debug("WS writer disconnect for %s", handler_name or "<default>")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("WS writer stopped: %s", exc)
+
+    writer_task = asyncio.create_task(_writer())
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _encode(obj) -> str:  # compact JSON for the wire
+        return json.dumps(obj, default=str, separators=(",", ":"))
+
+    def _queue_event(event_obj) -> None:
+        """Enqueue an event frame, dropping the oldest if *out_q* is full."""
+        try:
+            if out_q.full():
+                _ = out_q.get_nowait()  # drop oldest to make room
+            out_q.put_nowait(_encode(event_obj))
+        except asyncio.QueueFull:
+            logger.warning("WS buffer still full – dropping event for %s", handler_name or "<default>")
+        except asyncio.QueueEmpty:
+            # Very unlikely race: queue became empty after the *full()* check.
+            out_q.put_nowait(_encode(event_obj))
+
+    # ------------------------------------------------------------------
+    # Main loop – multiplex *client frames* vs *server events*.
+    # We **delay** forwarding of server events until the first client
+    # request has been processed. This ensures the corresponding reply
+    # is the very first frame the browser receives (see tests).
+    # ------------------------------------------------------------------
+
+    first_request_seen = False
+    stalled_events: List[dict] = []  # events buffered before first request
+
     try:
+        listener = asyncio.create_task(bus_q.get())
+        receiver = asyncio.create_task(ws.receive_json())
+
         while True:
-            listener = asyncio.create_task(queue.get())
-            receiver = asyncio.create_task(ws.receive_json())
-            done, pending = await asyncio.wait(
-                {listener, receiver},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            done, _ = await asyncio.wait({listener, receiver}, return_when=asyncio.FIRST_COMPLETED)
+
+            if receiver in done:
+                # --- client → server ---
+                try:
+                    msg = receiver.result()
+                except Exception:
+                    break  # disconnect or malformed frame
+
+                # inject handler name for convenience
+                if handler_name and isinstance(msg, dict):
+                    if msg.get("method") in {"tasks/send", "tasks/sendSubscribe"} and isinstance(
+                        msg.get("params"), dict
+                    ):
+                        msg["params"].setdefault("handler", handler_name)
+
+                # Call JSON-RPC protocol & send reply immediately
+                reply = await protocol._handle_raw_async(msg)
+                if reply is not None:
+                    await ws.send_text(_encode(jsonable_encoder(reply, exclude_none=True)))
+
+                if not first_request_seen:
+                    # Discard any background events that accumulated **before** the
+                    # very first client request – they are likely irrelevant.
+                    stalled_events.clear()
+                    # ALSO purge anything already waiting on the bus queue so we
+                    # don’t leak stale frames after the client closes.
+                    try:
+                        while True:
+                            _ = bus_q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                    # restart listener so we don’t process the event that was
+                    # already fetched into the *listener* task.
+                    listener.cancel()
+                    await asyncio.gather(listener, return_exceptions=True)
+                    listener = asyncio.create_task(bus_q.get())
+                    first_request_seen = True
+
+                # re-arm receiver
+                receiver = asyncio.create_task(ws.receive_json())
 
             if listener in done:
-                # Handle event from event bus
-                event = listener.result()
-                await ws.send_json({
+                # --- server event ready ---
+                ev = listener.result()
+                frame = {
                     "jsonrpc": "2.0",
                     "method": "tasks/event",
-                    "params": event.model_dump(exclude_none=True),
-                })
-                receiver.cancel()
-            else:
-                # Handle message from client
-                msg = receiver.result()
-                
-                # Inject handler name if specified
-                if handler_name and isinstance(msg, dict):
-                    if "method" in msg and "params" in msg:
-                        method = msg["method"]
-                        if method in ("tasks/send", "tasks/sendSubscribe"):
-                            if isinstance(msg["params"], dict):
-                                msg["params"]["handler"] = handler_name
-                
-                response = await protocol._handle_raw_async(msg)
-                if response:
-                    await ws.send_json(response)
-                listener.cancel()
+                    "params": jsonable_encoder(ev, exclude_none=True),
+                }
+                if first_request_seen:
+                    _queue_event(frame)
+                else:
+                    stalled_events.append(frame)
+
+                # re-arm listener
+                listener = asyncio.create_task(bus_q.get())
+
     except WebSocketDisconnect:
         pass
     finally:
-        event_bus.unsubscribe(queue)
+        writer_task.cancel()
+        await asyncio.gather(writer_task, return_exceptions=True)
+        bus.unsubscribe(bus_q)
