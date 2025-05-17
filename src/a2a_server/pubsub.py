@@ -46,7 +46,7 @@ class EventBus:
             try:
                 q.put_nowait(event)
             except asyncio.QueueFull:
-                # Put in the background; fire‑and‑forget
+                # Put in the background; fire-and-forget
                 background.append(asyncio.create_task(q.put(event)))
 
         # Detach background tasks so "Task was destroyed but is pending!" doesn’t pop

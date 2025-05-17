@@ -40,17 +40,17 @@ async def test_unsubscribe_stops_delivery():
 
 @pytest.mark.asyncio
 async def test_slow_consumer_does_not_block_others():
-    """`publish` should resolve quickly even when a subscriber is back‑pressured."""
+    """`publish` should resolve quickly even when a subscriber is back-pressured."""
     bus = EventBus()
 
     fast = bus.subscribe()
 
-    # Slow consumer – bounded queue size 1 and pre‑filled to force full state.
+    # Slow consumer – bounded queue size 1 and pre-filled to force full state.
     slow: asyncio.Queue = asyncio.Queue(maxsize=1)
     await slow.put("prefill")
     bus._queues.append(slow)
 
-    # `publish` must complete within timeout (fast‑path) and deliver to fast queue.
+    # `publish` must complete within timeout (fast-path) and deliver to fast queue.
     await asyncio.wait_for(bus.publish("ping"), timeout=0.05)
     assert await fast.get() == "ping"
 

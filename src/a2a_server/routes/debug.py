@@ -14,7 +14,7 @@ def register_debug_routes(app: FastAPI, event_bus, task_manager):
 
     @app.post("/debug/test-event/{task_id}")
     async def _debug_test_event(task_id: str, message: str = "Test message"):
-        # pull everything from the JSON‑RPC spec module
+        # pull everything from the JSON-RPC spec module
         from a2a_json_rpc.spec import (
             TaskStatus, TaskState, Message, Role, TextPart, TaskStatusUpdateEvent
         )

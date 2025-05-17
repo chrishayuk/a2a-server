@@ -5,7 +5,7 @@ from __future__ import annotations
 a2a_server.tasks.task_manager
 ================================
 TaskManager refactored to use **asyncio.TaskGroup** (Python ≥ 3.11) and to be
-robust against post‑cancellation events coming from slow / non‑cooperative
+robust against post-cancellation events coming from slow / non-cooperative
 handlers.
 """
 

@@ -1,8 +1,8 @@
 # File: tests/test_methods.py
 from __future__ import annotations
-"""async‑native tests for a2a_server.methods (TaskGroup edition).
+"""async-native tests for a2a_server.methods (TaskGroup edition).
 
-These tests exercise the public JSON‑RPC surface end‑to‑end with a real
+These tests exercise the public JSON-RPC surface end-to-end with a real
 TaskManager + EchoHandler running inside an asyncio.TaskGroup.
 """
 
@@ -31,12 +31,12 @@ from a2a_server.tasks.task_manager import TaskManager
 
 
 def _json_rpc(id_: str, method: str, params: Dict[str, Any] | None = None) -> JSONRPCRequest:  # noqa: ANN001
-    """Convenience builder for JSON‑RPC requests."""
+    """Convenience builder for JSON-RPC requests."""
     return JSONRPCRequest(id=id_, jsonrpc="2.0", method=method, params=params or {})
 
 
 async def _call(proto: JSONRPCProtocol, req: JSONRPCRequest):  # noqa: ANN001
-    """Round‑trip *req* through *proto* and return the *result* field."""
+    """Round-trip *req* through *proto* and return the *result* field."""
     raw = await proto._handle_raw_async(req.model_dump())
     if raw is None:  # Notification path – directly call registered handler
         handler = proto._methods[req.method]  # type: ignore[attr-defined]

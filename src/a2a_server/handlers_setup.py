@@ -10,7 +10,7 @@ from a2a_server.tasks.discovery import discover_all_handlers
 
 def find_handler_class(name: str) -> Optional[Type[TaskHandler]]:
     """Locate a TaskHandler subclass by import path or by discovery."""
-    # fully‑qualified import
+    # fully-qualified import
     if "." in name:
         try:
             mod_path, cls_name = name.rsplit(".", 1)
@@ -22,7 +22,7 @@ def find_handler_class(name: str) -> Optional[Type[TaskHandler]]:
             logging.error("Couldn’t import %s", name, exc_info=True)
         return None
 
-    # auto‑discovered by class name
+    # auto-discovered by class name
     for cls in discover_all_handlers():
         if cls.__name__ == name:
             return cls
@@ -43,7 +43,7 @@ def find_handler_class(name: str) -> Optional[Type[TaskHandler]]:
 
 
 def load_object(spec: str) -> Any:
-    """Try to import a dotted‑path or common agent module patterns."""
+    """Try to import a dotted-path or common agent module patterns."""
     if "." in spec:
         mod, attr = spec.rsplit(".", 1)
         try:

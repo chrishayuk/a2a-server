@@ -20,7 +20,7 @@
 #         "name": "pirate_agent",
 #         "agent_card": {
 #             "name": "Pirate Agent",
-#             "description": "Converts your text into salty pirate‑speak",
+#             "description": "Converts your text into salty pirate-speak",
 #             "version": "0.1.0",
 #             "documentationUrl": "https://pirate.example.com/docs",
 #             "provider": {
@@ -77,7 +77,7 @@
 #     )
     
 #     assert card.name == "Pirate Agent"
-#     assert card.description == "Converts your text into salty pirate‑speak"
+#     assert card.description == "Converts your text into salty pirate-speak"
 #     assert card.url == "http://localhost:8000/pirate_agent"
 #     assert card.version == "0.1.0"
 #     assert card.documentationUrl == "https://pirate.example.com/docs"

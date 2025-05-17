@@ -12,7 +12,7 @@ __all__ = ["configure_logging"]
 
 
 # ---------------------------------------------------------------------------
-# Default per‑module level tweaks
+# Default per-module level tweaks
 # ---------------------------------------------------------------------------
 _DEFAULT_QUIET_MODULES: Dict[str, str] = {
     "asyncio": "WARNING",
@@ -102,7 +102,7 @@ def configure_logging(
     for h in handlers:
         root_logger.addHandler(h)
 
-    # ── Module‑level overrides --------------------------------------------
+    # ── Module-level overrides --------------------------------------------
     if verbose_modules:
         for mod_name in verbose_modules:
             logging.getLogger(mod_name).setLevel(logging.DEBUG)

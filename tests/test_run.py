@@ -1,6 +1,6 @@
 # tests/test_run.py
 """
-Unit‑tests for the async‑native CLI entry‑point (`a2a_server.run`).
+Unit-tests for the async-native CLI entry-point (`a2a_server.run`).
 
 Fixed for httpx ≥ 0.27 (uses `ASGITransport`) and the updated `_serve`
 implementation.
@@ -75,7 +75,7 @@ def test_build_app_returns_fastapi():
 
 
 # ---------------------------------------------------------------------------
-# _serve  (monkey‑patch Uvicorn so no real sockets are opened)
+# _serve  (monkey-patch Uvicorn so no real sockets are opened)
 # ---------------------------------------------------------------------------
 
 
@@ -93,7 +93,7 @@ async def test_serve_starts_and_stops_quickly():
         await asyncio.sleep(0)  # let it start
         assert not task.done()
 
-        # emulate Ctrl‑C: set should_exit; _serve now sets Event after .serve returns
+        # emulate Ctrl-C: set should_exit; _serve now sets Event after .serve returns
         frame = task.get_coro().cr_frame
         frame.f_locals["server"].should_exit = True
         # also release the stop Event so _serve can finish without awaiting signals

@@ -4,7 +4,7 @@ from typing import List, Optional
 
 def parse_args() -> argparse.Namespace:
     """
-    Parse command‑line arguments for the A2A server.
+    Parse command-line arguments for the A2A server.
     """
     parser = argparse.ArgumentParser("A2A Server (YAML config)")
     parser.add_argument(

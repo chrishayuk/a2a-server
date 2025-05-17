@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
-# a2a_server/run.py
-"""
-Async-native CLI entry-point for the A2A server (“python -m a2a_server”).
-"""
 from __future__ import annotations
+"""Async-native CLI entry-point for the A2A server (``python -m a2a_server``)."""
 
 import asyncio
 import logging
@@ -20,17 +17,17 @@ from a2a_server.handlers_setup import setup_handlers
 from a2a_server.logging import configure_logging
 from a2a_server.app import create_app
 
-__all__ = ["_build_app", "_serve", "run_server"]  # ← exported for tests
+__all__ = ["_build_app", "_serve", "run_server"]
 
-
-# ────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Helpers
-# ────────────────────────────────────────────────────────────────────────────
-def _build_app(cfg: dict, args) -> FastAPI:
-    """Instantiate the FastAPI app with handlers resolved from *cfg*."""
+# ---------------------------------------------------------------------------
+
+def _build_app(cfg: dict, args) -> FastAPI:  # noqa: ANN001 – CLI helper
+    """Instantiate a FastAPI app with handlers resolved from *cfg*."""
     handlers_cfg = cfg["handlers"]
 
-    # explicit list beats discovery
+    # explicit list > discovery ordering
     all_handlers, default_handler = setup_handlers(handlers_cfg)
     use_discovery = handlers_cfg.get("use_discovery", True)
 
@@ -53,7 +50,7 @@ def _build_app(cfg: dict, args) -> FastAPI:
 
 
 async def _serve(app: FastAPI, host: str, port: int, log_level: str) -> None:
-    """Run *app* under **uvicorn.Server** and handle SIGINT/SIGTERM."""
+    """Run *app* under **uvicorn.Server** and handle SIGINT/SIGTERM politely."""
     config = uvicorn.Config(
         app,
         host=host,
@@ -67,7 +64,7 @@ async def _serve(app: FastAPI, host: str, port: int, log_level: str) -> None:
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
 
-    def _graceful_exit(*_: object) -> None:  # noqa: ANN001
+    def _graceful_exit(*_: object) -> None:  # noqa: D401, ANN001 – signal handler
         if not server.should_exit:
             server.should_exit = True
         stop.set()
@@ -75,22 +72,24 @@ async def _serve(app: FastAPI, host: str, port: int, log_level: str) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, _graceful_exit)
-        except NotImplementedError:  # Windows
-            signal.signal(sig, lambda *_: _graceful_exit())
+        except NotImplementedError:  # Windows / restricted runtime
+            # Defer the blocking call until *after* the loop is running.
+            loop.call_soon_threadsafe(lambda s=sig: signal.signal(s, lambda *_: _graceful_exit()))
 
     logging.info("Starting A2A server on http://%s:%s", host, port)
     await server.serve()
     await stop.wait()  # ensure caller sees graceful shutdown
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# Public CLI
-# ────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# CLI entry
+# ---------------------------------------------------------------------------
+
 def run_server() -> None:
-    """Entry invoked by ``python -m a2a_server`` OR the ``a2a-server`` script."""
+    """Entry used by ``python -m a2a_server`` **and** the ``a2a-server`` script."""
     args = parse_args()
 
-    # Load & merge config -----------------------------------------------------
+    # ── config ----------------------------------------------------------
     cfg = load_config(args.config)
     if args.log_level:
         cfg["logging"]["level"] = args.log_level
@@ -99,7 +98,7 @@ def run_server() -> None:
     if args.no_discovery:
         cfg["handlers"]["use_discovery"] = False
 
-    # Logging -----------------------------------------------------------------
+    # ── logging ---------------------------------------------------------
     L = cfg["logging"]
     configure_logging(
         level_name=L["level"],
@@ -108,7 +107,7 @@ def run_server() -> None:
         quiet_modules=L.get("quiet_modules", {}),
     )
 
-    # Build ASGI app ----------------------------------------------------------
+    # ── build ASGI app --------------------------------------------------
     app = _build_app(cfg, args)
 
     if args.list_routes:
@@ -116,12 +115,12 @@ def run_server() -> None:
             if hasattr(route, "path"):
                 print(route.path)
 
-    # Gather runtime options --------------------------------------------------
+    # ── runtime options -------------------------------------------------
     host = cfg["server"].get("host", "0.0.0.0")
     port = int(os.getenv("PORT", cfg["server"].get("port", 8000)))
     log_level = L["level"]
 
-    # Block until server exits ------------------------------------------------
+    # ── block until server exits ---------------------------------------
     asyncio.run(_serve(app, host, port, log_level))
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 """
 a2a_server.methods
 ==================
-JSON‑RPC task‑method implementations (now TaskGroup‑native).
+JSON-RPC task-method implementations (now TaskGroup-native).
 
 Key points
 ----------
@@ -14,8 +14,8 @@ Key points
   `TaskManager` already runs every task inside its **asyncio.TaskGroup** and
   exposes `shutdown()` for cleanup.
 * `cancel_pending_tasks()` is therefore a thin wrapper that simply calls
-  `await tm.shutdown()` (plus backward‑compat support for any legacy
-  WeakSet a third‑party lib might still stuff into this module).
+  `await tm.shutdown()` (plus backward-compat support for any legacy
+  WeakSet a third-party lib might still stuff into this module).
 """
 
 import asyncio
@@ -39,7 +39,7 @@ _R = TypeVar("_R")
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Legacy WeakSet shim (kept for 3rd‑party compatibility)                     
+# Legacy WeakSet shim (kept for 3rd-party compatibility)                     
 # ---------------------------------------------------------------------------
 
 _BACKGROUND: set[asyncio.Task[Any]] = set()  # no longer used internally
@@ -74,7 +74,7 @@ def cancel_pending_tasks(tm: TaskManager | None = None) -> asyncio.Task[Any]:  #
         if tm is not None:
             await tm.shutdown()
 
-    # Detach so callers can fire‑and‑forget (mirrors old API)
+    # Detach so callers can fire-and-forget (mirrors old API)
     return asyncio.create_task(_do_cancel())
 
 
@@ -102,12 +102,12 @@ def _rpc(
 
 
 # ---------------------------------------------------------------------------
-# Public entry‑point                                                         
+# Public entry-point                                                         
 # ---------------------------------------------------------------------------
 
 
 def register_methods(protocol: JSONRPCProtocol, manager: TaskManager) -> None:
-    """Attach all task‑related RPC methods to *protocol*."""
+    """Attach all task-related RPC methods to *protocol*."""
 
     @_rpc(protocol, "tasks/get", TaskQueryParams.model_validate)
     async def _get(_: str, q: TaskQueryParams, __):  # noqa: D401, ANN001

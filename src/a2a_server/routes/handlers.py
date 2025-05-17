@@ -56,7 +56,7 @@ def register_handler_routes(
             if card:
                 return card.dict(exclude_none=True)
 
-            # fallback minimal agent‑card, now with "mount"
+            # fallback minimal agent-card, now with "mount"
             return {
                 "name": _h.replace("_", " ").title(),
                 "description": f"A2A handler for {_h}",

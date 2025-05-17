@@ -13,7 +13,7 @@ handlers:
     name: pirate_agent
     agent_card:
       name: Pirate Agent
-      description: "Converts your text into salty pirate‑speak"
+      description: "Converts your text into salty pirate-speak"
       #url: "https://a2a-server.fly.dev/pirate_agent"
       version: "0.1.0"
       documentationUrl: "https://a2a-server.fly.dev/pirate_agent/docs"
