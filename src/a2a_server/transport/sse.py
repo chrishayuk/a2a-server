@@ -1,147 +1,143 @@
 # File: a2a_server/transport/sse.py
+from __future__ import annotations
+"""Server‑Sent Events (SSE) transport for the A2A server – async flush with
+max‑lifetime guard.
+
+Features
+--------
+* **Immediate flush** after each event (zero‑byte chunk).
+* **Heartbeat** comment every 5 s of inactivity.
+* **Max stream lifetime** – closes after ``MAX_SSE_LIFETIME`` seconds
+  (30 min by default, override with env var).
+* **Graceful disconnects** – suppresses tracebacks on client drop.
 """
-Server-Sent Events (SSE) transport for the A2A server.
-Modified to ensure events are compatible with the A2A client.
-"""
+
+import asyncio
 import json
-from typing import Dict, Optional, AsyncGenerator, List
-from fastapi import FastAPI, Request, Query
-from fastapi.responses import StreamingResponse
-from fastapi.encoders import jsonable_encoder
 import logging
+import os
+import time
+from typing import AsyncGenerator, List, Optional
+
+from fastapi import FastAPI, Query, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import StreamingResponse
 
 from a2a_server.pubsub import EventBus
 from a2a_server.tasks.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
 
-async def _create_sse_response(
-    event_bus: EventBus,
-    task_ids: Optional[List[str]] = None
-) -> StreamingResponse:
-    """
-    Create an SSE streaming response compatible with A2A clients.
-    
-    Args:
-        event_bus: The event bus to subscribe to
-        task_ids: Optional list of task IDs to filter events
-    
-    Returns:
-        StreamingResponse with SSE events in A2A client format
-    """
-    # Subscribe to event bus
+# ---------------------------------------------------------------------------
+# Tunables
+# ---------------------------------------------------------------------------
+
+MAX_SSE_LIFETIME: int = int(os.getenv("MAX_SSE_LIFETIME", 30 * 60))  # seconds
+HEARTBEAT_INTERVAL = 5.0  # seconds of idle before a ':' comment is sent
+
+# ---------------------------------------------------------------------------
+# Core helper
+# ---------------------------------------------------------------------------
+
+def _make_notification(event):
+    """Serialise *event* into the JSON-RPC notification body we expose."""
+    if hasattr(event, "status"):
+        msg = jsonable_encoder(getattr(event.status, "message", None), exclude_none=True)
+        return {
+            "type": "status",
+            "id": event.id,
+            "status": {
+                "state": str(event.status.state),
+                "timestamp": event.status.timestamp.isoformat() if getattr(event.status, "timestamp", None) else None,
+                "message": msg,
+            },
+            "final": getattr(event, "final", False),
+        }
+    if hasattr(event, "artifact"):
+        return {
+            "type": "artifact",
+            "id": event.id,
+            "artifact": jsonable_encoder(event.artifact, exclude_none=True),
+        }
+    return jsonable_encoder(event, exclude_none=True)
+
+
+async def _create_sse_response(event_bus: EventBus, task_ids: Optional[List[str]] = None) -> StreamingResponse:
+    """Return a streaming response that auto‑expires after *MAX_SSE_LIFETIME*."""
+
     queue = event_bus.subscribe()
-    
-    async def event_generator() -> AsyncGenerator[str, None]:
-        """Generate SSE events from the event bus queue."""
+    started = time.monotonic()
+
+    async def _gen() -> AsyncGenerator[bytes, None]:
+        last_send = time.monotonic()
         try:
             while True:
-                # Wait for next published event
-                event = await queue.get()
-                
-                # Filter by task ID if specified
-                if task_ids and hasattr(event, 'id') and event.id not in task_ids:
+                # Lifetime cutoff -------------------------------------------------
+                if time.monotonic() - started > MAX_SSE_LIFETIME:
+                    logger.debug("SSE stream exceeded %ss, closing", MAX_SSE_LIFETIME)
+                    break
+
+                # Heartbeat -------------------------------------------------------
+                dur_idle = time.monotonic() - last_send
+                timeout = max(0.0, HEARTBEAT_INTERVAL - dur_idle)
+
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    # send heartbeat ':' comment
+                    yield b": keep-alive\n\n"
+                    await asyncio.sleep(0)
+                    yield b""
+                    last_send = time.monotonic()
                     continue
-                
-                # Convert to JSON-serializable format with proper formatting for client
-                event_data = jsonable_encoder(event, exclude_none=True)
-                
-                # Check the event type to format it appropriately for the client
-                event_type = type(event).__name__
-                
-                # For TaskStatusUpdateEvent
-                if hasattr(event, 'status'):
-                    # Extract and format message if available
-                    message = None
-                    if hasattr(event.status, 'message') and event.status.message:
-                        message = jsonable_encoder(event.status.message, exclude_none=True)
-                    
-                    # Create a properly structured client event
-                    client_event = {
-                        "jsonrpc": "2.0",
-                        "method": "tasks/event",
-                        "params": {
-                            "type": "status",
-                            "id": event.id,
-                            "status": {
-                                "state": str(event.status.state),
-                                "timestamp": event.status.timestamp.isoformat() if hasattr(event.status, 'timestamp') else None,
-                                "message": message
-                            },
-                            "final": event.final if hasattr(event, 'final') else False
-                        }
-                    }
-                # For TaskArtifactUpdateEvent
-                elif hasattr(event, 'artifact'):
-                    client_event = {
-                        "jsonrpc": "2.0",
-                        "method": "tasks/event",
-                        "params": {
-                            "type": "artifact",
-                            "id": event.id,
-                            "artifact": jsonable_encoder(event.artifact, exclude_none=True)
-                        }
-                    }
-                # Default fallback
-                else:
-                    client_event = {
-                        "jsonrpc": "2.0",
-                        "method": "tasks/event",
-                        "params": event_data
-                    }
-                
-                # Serialize to JSON
-                data_str = json.dumps(client_event)
-                logger.debug(f"Sending SSE event: {data_str[:200]}...")
-                
-                # Yield in proper SSE format
-                yield f"data: {data_str}\n\n"
+                except asyncio.CancelledError:
+                    logger.debug("SSE subscriber task cancelled")
+                    break
+
+                if task_ids and getattr(event, "id", None) not in task_ids:
+                    continue
+
+                payload = _make_notification(event)
+                wire = {"jsonrpc": "2.0", "method": "tasks/event", "params": payload}
+                data = json.dumps(wire)
+                logger.debug("SSE → %s", data[:160])
+
+                yield f"data: {data}\n\n".encode()
+                await asyncio.sleep(0)
+                yield b""
+                last_send = time.monotonic()
         finally:
-            # Clean up subscription on disconnect
             event_bus.unsubscribe(queue)
-    
+
     return StreamingResponse(
-        event_generator(),
+        _gen(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"  # For Nginx
-        }
+            "X-Accel-Buffering": "no",
+        },
     )
 
-def setup_sse(app: FastAPI, event_bus: EventBus, task_manager: TaskManager) -> None:
-    """
-    Set up SSE endpoints with direct handler mounting:
-    - /events for default handler
-    - /{handler_name}/events for specific handlers
-    """
+# ---------------------------------------------------------------------------
+# Route registration helper
+# ---------------------------------------------------------------------------
+
+def setup_sse(app: FastAPI, event_bus: EventBus, task_manager: TaskManager) -> None:  # noqa: D401
+    """Register /events and /<handler>/events endpoints on *app*."""
+
     @app.get("/events", summary="Stream task status & artifact updates via SSE")
-    async def sse_default_endpoint(
-        request: Request,
-        task_ids: Optional[List[str]] = Query(None)
-    ):
-        """SSE endpoint for the default handler."""
+    async def _root_events(request: Request, task_ids: Optional[List[str]] = Query(None)):
         return await _create_sse_response(event_bus, task_ids)
-    
-    # Get all registered handlers
-    all_handlers = task_manager.get_handlers()
-    
-    # Create handler-specific SSE endpoints
-    for handler_name in all_handlers:
-        # Create a function to properly capture handler_name in closure
-        def create_sse_endpoint(name):
-            async def handler_sse_endpoint(
-                request: Request,
-                task_ids: Optional[List[str]] = Query(None)
-            ):
-                """SSE endpoint for a specific handler."""
-                logger.debug(f"SSE connection established for handler '{name}'")
-                # Could implement handler-specific filtering here if needed
+
+    for handler in task_manager.get_handlers():
+
+        def _mk(name: str):
+            async def _handler_events(request: Request, task_ids: Optional[List[str]] = Query(None)):
+                logger.debug("SSE open for handler %s", name)
                 return await _create_sse_response(event_bus, task_ids)
-            return handler_sse_endpoint
-        
-        # Register the endpoint with a concrete path
-        endpoint = create_sse_endpoint(handler_name)
-        app.get(f"/{handler_name}/events", summary=f"Stream events for {handler_name}")(endpoint)
-        logger.debug(f"Registered SSE endpoint for handler '{handler_name}'")
+
+            return _handler_events
+
+        app.get(f"/{handler}/events", summary=f"Stream events for {handler}")(_mk(handler))
+        logger.debug("Registered SSE endpoint for handler %s", handler)
