@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
+#!/usr/bin/env python3
 from __future__ import annotations
-"""Async-native CLI entry-point for the A2A server (``python -m a2a_server``).
+"""Async-native CLI entry-point for the A2A server.
 
-Key changes (May-2025)
-----------------------
-* No more manual signal juggling - we rely on ``uvicorn.Server``ʼs built-in
-  handling and keep everything on the same running event-loop.
-* ``load_config`` is awaited (async, non-blocking).
-* Public helpers (`_build_app`, `_serve`, `run_server`) remain so existing tests
-  pass unchanged.
+Changes (May-2025)
+------------------
+* Uvicorn handles signals; no manual SIGINT juggling.
+* Awaitable `load_config` keeps startup async.
+* Added log-level tweak to silence Uvicorn lifespan `CancelledError` tracebacks.
 """
 
 import asyncio
@@ -32,16 +31,15 @@ __all__ = ["_build_app", "_serve", "run_server"]
 # ---------------------------------------------------------------------------
 
 def _build_app(cfg: dict, args) -> FastAPI:  # noqa: ANN001 – CLI helper
-    """Instantiate a FastAPI app with handlers resolved from *cfg*."""
+    """Instantiate a FastAPI app according to *cfg*."""
     handlers_cfg = cfg["handlers"]
 
-    # explicit list > discovery ordering
-    all_handlers, default_handler = setup_handlers(handlers_cfg)
+    all_handlers, default = setup_handlers(handlers_cfg)
     use_discovery = handlers_cfg.get("use_discovery", True)
 
     handlers_list: Optional[list] = (
-        [default_handler] + [h for h in all_handlers if h is not default_handler]
-        if default_handler
+        [default] + [h for h in all_handlers if h is not default]
+        if default
         else all_handlers or None
     )
 
@@ -58,19 +56,23 @@ def _build_app(cfg: dict, args) -> FastAPI:  # noqa: ANN001 – CLI helper
 
 
 async def _serve(app: FastAPI, host: str, port: int, log_level: str) -> None:
-    """Run *app* under **uvicorn.Server** – graceful shutdown handled by Uvicorn."""
-    config = uvicorn.Config(
+    """Run *app* via **uvicorn.Server** and exit silently on ^C."""
+    cfg = uvicorn.Config(
         app,
         host=host,
         port=port,
         log_level=log_level.lower(),
-        loop="asyncio",            # stay on the current event-loop
-        proxy_headers=True,         # honour X-Forwarded-*
+        loop="asyncio",
+        proxy_headers=True,
         forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "*"),
     )
-    server = uvicorn.Server(config)
+    server = uvicorn.Server(cfg)
     logging.info("Starting A2A server on http://%s:%s", host, port)
-    await server.serve()
+
+    try:
+        await server.serve()
+    except asyncio.CancelledError:
+        pass  # clean Ctrl-C
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +80,6 @@ async def _serve(app: FastAPI, host: str, port: int, log_level: str) -> None:
 # ---------------------------------------------------------------------------
 
 async def _main_async() -> None:
-    """Async body for :func:`run_server`."""
     args = parse_args()
 
     # ── config ----------------------------------------------------------
@@ -99,26 +100,31 @@ async def _main_async() -> None:
         quiet_modules=L.get("quiet_modules", {}),
     )
 
+    # suppress uvicorn lifespan CancelledError tracebacks
+    logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+
     # ── build ASGI app --------------------------------------------------
     app = _build_app(cfg, args)
 
     if args.list_routes:
-        for route in app.routes:
-            if hasattr(route, "path"):
-                print(route.path)
+        for r in app.routes:
+            if hasattr(r, "path"):
+                print(r.path)
 
-    # ── runtime options -------------------------------------------------
+    # ── runtime ---------------------------------------------------------
     host = cfg["server"].get("host", "0.0.0.0")
     port = int(os.getenv("PORT", cfg["server"].get("port", 8000)))
     log_level = L["level"]
 
-    # ── serve -----------------------------------------------------------
     await _serve(app, host, port, log_level)
 
 
 def run_server() -> None:
-    """Synchronous wrapper so ``python -m a2a_server`` still just *works*."""
-    asyncio.run(_main_async())
+    """Entry-point for ``python -m a2a_server`` and the *a2a-server* script."""
+    try:
+        asyncio.run(_main_async())
+    except KeyboardInterrupt:
+        pass  # silent Ctrl-C
 
 
 if __name__ == "__main__":  # pragma: no cover

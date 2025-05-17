@@ -1,16 +1,7 @@
 # a2a_server/metrics.py
 from __future__ import annotations
-"""Minimal OpenTelemetry metrics helper for A2A-server (quiet by default).
-
-Export options
---------------
-* **OTLP push** - set ``OTEL_EXPORTER_OTLP_ENDPOINT``.
-* **Prometheus pull** - set ``PROMETHEUS_METRICS=true``.
-* **Console debugging** - *opt-in* via ``CONSOLE_METRICS=true``.
-
-If neither OTLP nor Prometheus is configured the helper now stays silent -
-solving the previous flood of JSON blobs on stdout during local runs & tests.
-"""
+"""Minimal OpenTelemetry metrics helper for A2A-server – now completely quiet
+on repeated shutdowns (no more "shutdown can only be called once")."""
 
 import atexit
 import os
@@ -49,7 +40,7 @@ if _PROM_ENABLED:
         prometheus_client = _pc
         _prom_reader = PrometheusMetricReader()  # auto-registers on global REGISTRY
     except ModuleNotFoundError:
-        _PROM_ENABLED = False  # dependency unavailable - silently disable
+        _PROM_ENABLED = False  # dependency unavailable – silently disable
 
 # ---------------------------------------------------------------------------
 # Globals
@@ -59,14 +50,13 @@ _provider: MeterProvider | None = None
 _counter: Any | None = None
 _histogram: Any | None = None
 
-
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
 def _init_provider() -> None:
     """Create (or reuse) the global MeterProvider.  Idempotent."""
-    global _provider, _counter, _histogram  # noqa: PLW0603 - module-level singletons
+    global _provider, _counter, _histogram  # noqa: PLW0603 – module-level singletons
 
     if _provider is None:
         current = metrics.get_meter_provider()
@@ -77,7 +67,7 @@ def _init_provider() -> None:
 
     readers: list[Any] = []
 
-    # OTLP push (highest priority - if set we always push)
+    # OTLP push (highest priority – if set we always push)
     if _OTLP_ENDPOINT:
         readers.append(
             PeriodicExportingMetricReader(
@@ -86,7 +76,6 @@ def _init_provider() -> None:
             )
         )
     elif _CONSOLE_ENABLED:
-        # Debugging only - opt-in, otherwise too noisy
         readers.append(
             PeriodicExportingMetricReader(ConsoleMetricExporter(), export_interval_millis=_INTERVAL_MS)
         )
@@ -106,12 +95,11 @@ def _init_provider() -> None:
     _counter = meter.create_counter("http.server.request.count", unit="1", description="HTTP requests")
     _histogram = meter.create_histogram("http.server.request.duration", unit="s", description="Request latency")
 
-
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def instrument_app(app: FastAPI) -> None:  # noqa: D401 - imperative style
+def instrument_app(app: FastAPI) -> None:  # noqa: D401 – imperative style
     """Attach OTel middleware and (optionally) a /metrics endpoint.  Idempotent."""
     _init_provider()
 
@@ -148,19 +136,37 @@ def instrument_app(app: FastAPI) -> None:  # noqa: D401 - imperative style
 
         app.state._prom_endpoint = True
 
-
 # ---------------------------------------------------------------------------
 # Clean-up
 # ---------------------------------------------------------------------------
 
-def _shutdown_provider() -> None:  # pragma: no cover - best-effort
-    p = globals().get("_provider")
-    if p is not None:
+def _shutdown_provider() -> None:  # pragma: no cover – best-effort
+    """Idempotent shutdown that stays silent on repeat calls."""
+    global _provider  # noqa: PLW0603
+
+    p: MeterProvider | None = _provider
+    if p is None:
+        return  # already shut down
+
+    # OpenTelemetry marks the provider after first shutdown; respect that flag
+    _already = getattr(p, "_shutdown", False) or getattr(p, "_is_shutdown", False)
+    if _already:
+        _provider = None
+        return
+
+    try:
+        p.shutdown()
+    except Exception:  # noqa: BLE001 – ignore transport errors during exit
+        pass
+    finally:
+        _provider = None  # ensure subsequent calls are no-ops
+        # Try a debug log only if stderr is still open
         try:
-            p.shutdown()
-        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).debug("OpenTelemetry metrics provider shut down (once)")
+        except ValueError:
             pass
 
-
-aexit = atexit.register  # shortcut so tests can monkey-patch
+# register at import time so normal app startup attaches it *once*
+aexit = atexit.register
 atexit.register(_shutdown_provider)
