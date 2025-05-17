@@ -1,22 +1,21 @@
 # a2a_server/transport/http.py
-"""
-HTTP JSON-RPC transport layer with SSE plus hardening
-====================================================
-Drop-in replacement for the original **a2a_server.transport.http** module.
-
-Key improvements (May-2025)
---------------------------
-* **Body-size guard** - requests whose *Content-Length* exceeds ``MAX_BODY`` (2 MiB by default) are answered with **413**.
-* **Per-request wall-time** - any JSON-RPC invocation that takes longer than ``REQUEST_TIMEOUT`` seconds (15 s by default) returns **504**.
-* **Parameter type check** - if ``payload.params`` is *not* an object then the server now returns **422** instead of crashing.
-* **Graceful SSE disconnects** - suppressed stack-traces when clients drop.
-
-These changes are transparent - public routes & schemas remain intact.
-"""
 from __future__ import annotations
+"""
+HTTP JSON-RPC transport layer (async-native)
+===========================================
+Drop-in replacement for **a2a_server.transport.http** that eliminates the last
+synchronous choke-points:
 
+* **Streaming body-size guard** - abort uploads as soon as they exceed
+  ``MAX_JSONRPC_BODY`` (even when *Content-Length* is absent).
+* **Off-thread JSON serialisation** for chatty SSE streams.
+* **Same public routes/behaviour** - no change to FastAPI schemas or clients.
+
+May-2025
+"""
 import asyncio
 import inspect
+import json
 import logging
 import os
 import uuid
@@ -25,6 +24,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from a2a_json_rpc.protocol import JSONRPCProtocol
 from a2a_json_rpc.spec import (
@@ -39,34 +39,84 @@ from a2a_server.tasks.task_manager import Task, TaskManager
 
 logger = logging.getLogger(__name__)
 
-# ────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Tunables (override with env vars)
-# ────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 MAX_BODY: int = int(os.getenv("MAX_JSONRPC_BODY", 2 * 1024 * 1024))  # 2 MiB
 REQUEST_TIMEOUT: float = float(os.getenv("JSONRPC_TIMEOUT", 15.0))    # seconds
 
-# ────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Middleware: streaming body‑size limiter
+# ---------------------------------------------------------------------------
+
+
+class BodySizeLimiterMiddleware(BaseHTTPMiddleware):
+    """Abort requests whose bodies exceed *max_body* bytes.
+
+    * If *Content‑Length* is present and already over the threshold we fail
+      **immediately** (no body read, cheap fast‑path).
+    * Otherwise we wrap the ASGI *receive* channel and count bytes chunk by
+      chunk, raising once the cumulative total crosses the limit.
+    """
+
+    def __init__(self, app, max_body: int) -> None:  # noqa: D401
+        super().__init__(app)
+        self.max_body = max_body
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+        # Fast‑path: respect declared Content‑Length --------------------------------
+        try:
+            clen = int(request.headers.get("content-length", 0))
+        except ValueError:
+            clen = 0
+        if clen > self.max_body:
+            return JSONResponse({"detail": "Payload too large"}, status_code=413)
+
+        # Slow‑path: stream & count --------------------------------------------------
+        total = 0
+        original_receive = request._receive  # type: ignore[attr-defined]
+
+        async def _limited_receive():
+            nonlocal total
+            message = await original_receive()
+            if message["type"] == "http.request":
+                total += len(message.get("body", b""))
+                if total > self.max_body:
+                    raise HTTPException(status_code=413, detail="Payload too large")
+            return message
+
+        request._receive = _limited_receive  # type: ignore[attr-defined]
+        try:
+            return await call_next(request)
+        finally:
+            request._receive = original_receive  # type: ignore[attr-defined]  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
 # Helpers
-# ────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+
+
+aasync = None  # silence legacy linters complaining about the historical typo
+
 
 def _is_terminal(state: TaskState) -> bool:
     return state in {TaskState.completed, TaskState.canceled, TaskState.failed}
 
-
-aasync = None  # silence linters complaining about the historical typo
 
 async def _create_task(
     tm: TaskManager,
     params: TaskSendParams,
     handler: str | None,
 ) -> Tuple[Task, str, str]:
-    """Helper that works with both *new* and *legacy* TaskManager signatures."""
+    """Helper that works with both *new* and *legacy* ``TaskManager`` signatures."""
+
     client_id = params.id
     original = inspect.unwrap(tm.create_task)
     bound: Callable[..., Awaitable[Task]] = original.__get__(tm, tm.__class__)  # type: ignore[assignment]
     sig = inspect.signature(original)
 
-    # New-style API - TaskManager accepts ``task_id``
+    # New‑style API - TaskManager accepts ``task_id``
     if "task_id" in sig.parameters:
         task = await bound(
             params.message,
@@ -80,16 +130,17 @@ async def _create_task(
     task = await bound(params.message, session_id=params.session_id, handler_name=handler)
     server_id = task.id
     if client_id and client_id != server_id:
-        async with tm._lock:  # noqa: SLF001 - harmless here
+        async with tm._lock:  # noqa: SLF001 - harmless here
             tm._aliases[client_id] = server_id  # type: ignore[attr-defined]
     else:
         client_id = server_id
     return task, server_id, client_id
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # SSE implementation - tasks/sendSubscribe
-# ────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+
 
 async def _stream_send_subscribe(
     payload: JSONRPCRequest,
@@ -127,7 +178,7 @@ async def _stream_send_subscribe(
                 if getattr(event, "id", None) != server_id:
                     continue
 
-                # serialisation ------------------------------------------------
+                # serialisation ---------------------------------------------
                 if isinstance(event, TaskStatusUpdateEvent):
                     body = event.model_dump(exclude_none=True)
                     body.update(id=client_id, type="status")
@@ -138,10 +189,13 @@ async def _stream_send_subscribe(
                     body = event.model_dump(exclude_none=True)
                     body["id"] = client_id
 
-                notif = JSONRPCRequest(
+                # Off‑thread JSON serialisation (CPU‑bound when streams are busy)
+                wire_dict = JSONRPCRequest(
                     jsonrpc="2.0", id=payload.id, method="tasks/event", params=body
-                )
-                yield f"data: {notif.model_dump_json()}\n\n"
+                ).model_dump(mode="json")
+                data = await asyncio.to_thread(json.dumps, wire_dict, separators=(",", ":"))
+
+                yield f"data: {data}\n\n"
 
                 if getattr(event, "final", False) or (
                     isinstance(event, TaskStatusUpdateEvent) and _is_terminal(event.status.state)
@@ -164,9 +218,10 @@ async def _stream_send_subscribe(
     )
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# Route-mount helper (public)
-# ────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Route‑mount helper (public)
+# ---------------------------------------------------------------------------
+
 
 def setup_http(
     app: FastAPI,
@@ -174,25 +229,12 @@ def setup_http(
     task_manager: TaskManager,
     event_bus: Optional[EventBus] = None,
 ) -> None:
-    """Mount default + per-handler JSON-RPC endpoints on *app*."""
+    """Mount default + per‑handler JSON‑RPC endpoints on *app*."""
 
-    # ------------------------------------------------------------------
-    # Global middleware - size guard (outermost so it runs first)
-    # ------------------------------------------------------------------
+    # ---- global middleware (size guard) ----------------------------------
+    app.add_middleware(BodySizeLimiterMiddleware, max_body=MAX_BODY)
 
-    @app.middleware("http")
-    async def _limit_body(request: Request, call_next):  # noqa: D401, ANN001
-        try:
-            clen = int(request.headers.get("content-length", 0))
-        except ValueError:
-            clen = 0
-        if clen > MAX_BODY:
-            return JSONResponse({"detail": "Payload too large"}, status_code=413)
-        return await call_next(request)
-
-    # ------------------------------------------------------------------
-    # Helper: run through Protocol with timeout & param validation
-    # ------------------------------------------------------------------
+    # ---- helper: run through Protocol with timeout & param validation -----
 
     async def _dispatch(req: JSONRPCRequest) -> Response:
         if not isinstance(req.params, dict):
@@ -206,9 +248,7 @@ def setup_http(
 
         return Response(status_code=204) if raw is None else JSONResponse(jsonable_encoder(raw))
 
-    # ------------------------------------------------------------------
-    # /rpc  (default, uses whichever handler is default)
-    # ------------------------------------------------------------------
+    # ---- /rpc  (default handler) -----------------------------------------
 
     @app.post("/rpc")
     async def _default_rpc(payload: JSONRPCRequest = Body(...)):  # noqa: D401
@@ -216,9 +256,7 @@ def setup_http(
             payload.params["id"] = str(uuid.uuid4())
         return await _dispatch(payload)
 
-    # ------------------------------------------------------------------
-    # Per-handler sub-trees (/{handler}/rpc  and  /{handler})
-    # ------------------------------------------------------------------
+    # ---- per‑handler sub‑trees  ------------------------------------------
 
     for handler in task_manager.get_handlers():
 
@@ -229,9 +267,7 @@ def setup_http(
         ):  # noqa: D401
             if payload.method == "tasks/send" and isinstance(payload.params, dict):
                 payload.params["id"] = str(uuid.uuid4())
-            if payload.method in {"tasks/send", "tasks/sendSubscribe"} and isinstance(
-                payload.params, dict
-            ):
+            if payload.method in {"tasks/send", "tasks/sendSubscribe"} and isinstance(payload.params, dict):
                 payload.params.setdefault("handler", _h)
             return await _dispatch(payload)
 

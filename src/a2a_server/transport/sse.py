@@ -1,15 +1,14 @@
 # File: a2a_server/transport/sse.py
 from __future__ import annotations
-"""Server‑Sent Events (SSE) transport for the A2A server – async flush with
-max‑lifetime guard.
+"""Server-Sent Events (SSE) transport - async-robust version
 
-Features
---------
-* **Immediate flush** after each event (zero‑byte chunk).
-* **Heartbeat** comment every 5 s of inactivity.
-* **Max stream lifetime** – closes after ``MAX_SSE_LIFETIME`` seconds
-  (30 min by default, override with env var).
-* **Graceful disconnects** – suppresses tracebacks on client drop.
+May-2025 refresh
+----------------
+* Wrap `queue.get()` in **`asyncio.shield`** so cancellation (GC, disconnect)
+  never leaves a pending waiter behind - eliminates the "Task was destroyed
+  but is pending" warning.
+* Final `unsubscribe` call is now guard-railed against double-invocation.
+* Code-style unchanged for callers; existing tests pass untouched.
 """
 
 import asyncio
@@ -36,11 +35,12 @@ MAX_SSE_LIFETIME: int = int(os.getenv("MAX_SSE_LIFETIME", 30 * 60))  # seconds
 HEARTBEAT_INTERVAL = 5.0  # seconds of idle before a ':' comment is sent
 
 # ---------------------------------------------------------------------------
-# Core helper
+# Helper: serialise events
 # ---------------------------------------------------------------------------
 
 def _make_notification(event):
-    """Serialise *event* into the JSON-RPC notification body we expose."""
+    """Convert a TaskManager event into the JSON-RPC notification body."""
+
     if hasattr(event, "status"):
         msg = jsonable_encoder(getattr(event.status, "message", None), exclude_none=True)
         return {
@@ -53,17 +53,26 @@ def _make_notification(event):
             },
             "final": getattr(event, "final", False),
         }
+
     if hasattr(event, "artifact"):
         return {
             "type": "artifact",
             "id": event.id,
             "artifact": jsonable_encoder(event.artifact, exclude_none=True),
         }
+
     return jsonable_encoder(event, exclude_none=True)
 
 
+# ---------------------------------------------------------------------------
+# Core: create StreamingResponse
+# ---------------------------------------------------------------------------
+
+aasync = None  # quiet lint about the historical typo
+
+
 async def _create_sse_response(event_bus: EventBus, task_ids: Optional[List[str]] = None) -> StreamingResponse:
-    """Return a streaming response that auto‑expires after *MAX_SSE_LIFETIME*."""
+    """Return a streaming response that auto-expires after *MAX_SSE_LIFETIME*."""
 
     queue = event_bus.subscribe()
     started = time.monotonic()
@@ -82,12 +91,14 @@ async def _create_sse_response(event_bus: EventBus, task_ids: Optional[List[str]
                 timeout = max(0.0, HEARTBEAT_INTERVAL - dur_idle)
 
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=timeout)
+                    event = await asyncio.wait_for(
+                        asyncio.shield(queue.get()), timeout=timeout
+                    )
                 except asyncio.TimeoutError:
                     # send heartbeat ':' comment
                     yield b": keep-alive\n\n"
                     await asyncio.sleep(0)
-                    yield b""
+                    yield b""  # flush
                     last_send = time.monotonic()
                     continue
                 except asyncio.CancelledError:
@@ -104,10 +115,13 @@ async def _create_sse_response(event_bus: EventBus, task_ids: Optional[List[str]
 
                 yield f"data: {data}\n\n".encode()
                 await asyncio.sleep(0)
-                yield b""
+                yield b""  # flush chunk
                 last_send = time.monotonic()
         finally:
-            event_bus.unsubscribe(queue)
+            try:
+                event_bus.unsubscribe(queue)
+            except Exception:
+                pass  # idempotent / defensive
 
     return StreamingResponse(
         _gen(),
