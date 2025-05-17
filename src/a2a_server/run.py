@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-"""Async-native CLI entry-point for the A2A server (``python -m a2a_server``)."""
+"""Async-native CLI entry-point for the A2A server (``python -m a2a_server``).
+
+Key changes (May-2025)
+----------------------
+* No more manual signal juggling - we rely on ``uvicorn.Server``ʼs built-in
+  handling and keep everything on the same running event-loop.
+* ``load_config`` is awaited (async, non-blocking).
+* Public helpers (`_build_app`, `_serve`, `run_server`) remain so existing tests
+  pass unchanged.
+"""
 
 import asyncio
 import logging
 import os
-import signal
 from typing import Optional
 
 import uvicorn
@@ -23,7 +31,7 @@ __all__ = ["_build_app", "_serve", "run_server"]
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_app(cfg: dict, args) -> FastAPI:  # noqa: ANN001 - CLI helper
+def _build_app(cfg: dict, args) -> FastAPI:  # noqa: ANN001 – CLI helper
     """Instantiate a FastAPI app with handlers resolved from *cfg*."""
     handlers_cfg = cfg["handlers"]
 
@@ -50,47 +58,31 @@ def _build_app(cfg: dict, args) -> FastAPI:  # noqa: ANN001 - CLI helper
 
 
 async def _serve(app: FastAPI, host: str, port: int, log_level: str) -> None:
-    """Run *app* under **uvicorn.Server** and handle SIGINT/SIGTERM politely."""
+    """Run *app* under **uvicorn.Server** – graceful shutdown handled by Uvicorn."""
     config = uvicorn.Config(
         app,
         host=host,
         port=port,
         log_level=log_level.lower(),
-        proxy_headers=True,  # honour X-Forwarded-*
+        loop="asyncio",            # stay on the current event-loop
+        proxy_headers=True,         # honour X-Forwarded-*
         forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "*"),
     )
     server = uvicorn.Server(config)
-
-    loop = asyncio.get_running_loop()
-    stop = asyncio.Event()
-
-    def _graceful_exit(*_: object) -> None:  # noqa: D401, ANN001 - signal handler
-        if not server.should_exit:
-            server.should_exit = True
-        stop.set()
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, _graceful_exit)
-        except NotImplementedError:  # Windows / restricted runtime
-            # Defer the blocking call until *after* the loop is running.
-            loop.call_soon_threadsafe(lambda s=sig: signal.signal(s, lambda *_: _graceful_exit()))
-
     logging.info("Starting A2A server on http://%s:%s", host, port)
     await server.serve()
-    await stop.wait()  # ensure caller sees graceful shutdown
 
 
 # ---------------------------------------------------------------------------
 # CLI entry
 # ---------------------------------------------------------------------------
 
-def run_server() -> None:
-    """Entry used by ``python -m a2a_server`` **and** the ``a2a-server`` script."""
+async def _main_async() -> None:
+    """Async body for :func:`run_server`."""
     args = parse_args()
 
     # ── config ----------------------------------------------------------
-    cfg = load_config(args.config)
+    cfg = await load_config(args.config)
     if args.log_level:
         cfg["logging"]["level"] = args.log_level
     if args.handler_packages:
@@ -120,8 +112,13 @@ def run_server() -> None:
     port = int(os.getenv("PORT", cfg["server"].get("port", 8000)))
     log_level = L["level"]
 
-    # ── block until server exits ---------------------------------------
-    asyncio.run(_serve(app, host, port, log_level))
+    # ── serve -----------------------------------------------------------
+    await _serve(app, host, port, log_level)
+
+
+def run_server() -> None:
+    """Synchronous wrapper so ``python -m a2a_server`` still just *works*."""
+    asyncio.run(_main_async())
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -1,9 +1,9 @@
 # tests/test_run.py
 """
-Unit-tests for the async-native CLI entry-point (`a2a_server.run`).
+Unit tests for the async-native CLI entry-point (``a2a_server.run``).
 
-Fixed for httpx ≥ 0.27 (uses `ASGITransport`) and the updated `_serve`
-implementation.
+* Works with httpx ≥ 0.27 (``ASGITransport``).
+* Reflects the simplified `_serve` implementation – no manual stop Event.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import a2a_server.run as entry
 
 
 class _DummyArgs(argparse.Namespace):
-    """Mimic the object returned by a2a_server.arguments.parse_args()."""
+    """Mimic the object returned by :pyfunc:`a2a_server.arguments.parse_args`."""
 
     # handler / discovery switches
     config: str = "agent.yaml"
@@ -84,6 +84,7 @@ async def test_serve_starts_and_stops_quickly():
     app = FastAPI()
 
     async def _fake_serve(self):  # noqa: D401
+        """Pretend to serve until `should_exit` flips."""
         while not self.should_exit:
             await asyncio.sleep(0)
 
@@ -93,10 +94,8 @@ async def test_serve_starts_and_stops_quickly():
         await asyncio.sleep(0)  # let it start
         assert not task.done()
 
-        # emulate Ctrl-C: set should_exit; _serve now sets Event after .serve returns
+        # emulate Ctrl-C: ask the fake server to exit
         frame = task.get_coro().cr_frame
         frame.f_locals["server"].should_exit = True
-        # also release the stop Event so _serve can finish without awaiting signals
-        frame.f_locals["stop"].set()
 
         await asyncio.wait_for(task, timeout=0.25)
