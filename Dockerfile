@@ -20,6 +20,6 @@ COPY --from=builder /venv /venv
 ENV PATH="/venv/bin:$PATH"
 
 COPY src src
-COPY README.md pyproject.toml agent.yaml .
+COPY README.md pyproject.toml agent-production.yaml .
 
-CMD ["a2a-server", "--config", "agent.yaml"]
+CMD ["a2a-server", "--config", "agent-production.yaml"]

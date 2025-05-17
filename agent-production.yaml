@@ -1,0 +1,74 @@
+# agent.yaml
+server:
+  host: 0.0.0.0
+  port: 8000
+
+handlers:
+  use_discovery: false
+  default: pirate_agent
+
+  pirate_agent:
+    type: a2a_server.tasks.handlers.google_adk_handler.GoogleADKHandler
+    agent: a2a_server.sample_agents.pirate_agent.pirate_agent
+    name: pirate_agent
+    agent_card:
+      name: Pirate Agent
+      description: "Converts your text into salty pirate-speak"
+      url: "https://a2a-server.fly.dev/pirate_agent"
+      version: "0.1.0"
+      documentationUrl: "https://a2a-server.fly.dev/pirate_agent/docs"
+      provider:
+        organization: "chrishayuk"
+        url: "https://chrishayuk.io"
+      capabilities:
+        streaming: true
+        pushNotifications: false
+      authentication:
+        schemes:
+          - "None"
+      defaultInputModes:
+        - "text/plain"
+      defaultOutputModes:
+        - "text/plain"
+      skills:
+        - id: pirate-talk
+          name: Pirate Talk
+          description: "Turn any message into pirate lingo"
+          tags:
+            - pirate
+            - fun
+          examples:
+            - "Arrr! Give me yer loot!"
+
+  chef_agent:
+    type: a2a_server.tasks.handlers.google_adk_handler.GoogleADKHandler
+    agent: a2a_server.sample_agents.chef_agent.chef_agent
+    name: chef_agent
+    agent_card:
+      name: Chef Agent
+      description: "Suggests delicious recipes from your ingredients"
+      url: "https://a2a-server.fly.dev/chef_agent"
+      version: "0.1.0"
+      documentationUrl: "https://a2a-server.fly.dev/chef_agent/docs"
+      provider:
+        organization: "chrishayuk"
+        url: "https://chrishayuk.io"
+      capabilities:
+        streaming: true
+        pushNotifications: false
+      authentication:
+        schemes:
+          - "None"
+      defaultInputModes:
+        - "text/plain"
+      defaultOutputModes:
+        - "text/plain"
+      skills:
+        - id: recipe-generation
+          name: Recipe Generation
+          description: "Suggest recipes based on ingredients"
+          tags:
+            - cooking
+            - recipes
+          examples:
+            - "What can I make with chicken, mushrooms, and rice?"
