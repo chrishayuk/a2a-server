@@ -14,7 +14,7 @@ handlers:
     agent_card:
       name: Pirate Agent
       description: "Converts your text into salty pirate‑speak"
-      url: "https://a2a-server.fly.dev/pirate_agent"
+      #url: "https://a2a-server.fly.dev/pirate_agent"
       version: "0.1.0"
       documentationUrl: "https://a2a-server.fly.dev/pirate_agent/docs"
       provider:
@@ -47,7 +47,7 @@ handlers:
     agent_card:
       name: Chef Agent
       description: "Suggests delicious recipes from your ingredients"
-      url: "https://a2a-server.fly.dev/chef_agent"
+      #url: "https://a2a-server.fly.dev/chef_agent"
       version: "0.1.0"
       documentationUrl: "https://a2a-server.fly.dev/chef_agent/docs"
       provider:

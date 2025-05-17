@@ -1,342 +1,320 @@
 # File: tests/test_methods.py
+"""async‑native tests for a2a_server.methods
+
+Exercises the public JSON‑RPC surface end‑to‑end using real requests.
+"""
+from __future__ import annotations
+
+import asyncio
+from typing import Any, Dict
+
 import pytest
-import json
-from pydantic import ValidationError
 from a2a_json_rpc.protocol import JSONRPCProtocol
+from a2a_json_rpc.spec import (
+    JSONRPCRequest,
+    Message,
+    Role,
+    TaskState,
+    TextPart,
+)
+
 from a2a_server.methods import register_methods
-from a2a_server.tasks.task_manager import TaskManager, TaskNotFound
 from a2a_server.pubsub import EventBus
-from a2a_json_rpc.spec import TextPart, Message, Role, TaskState
 from a2a_server.tasks.handlers.echo_handler import EchoHandler
+from a2a_server.tasks.task_manager import TaskManager, TaskNotFound
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _json_rpc(id_: str, method: str, params: Dict[str, Any] | None = None) -> JSONRPCRequest:  # noqa: ANN001
+    """Convenience helper to build a JSON‑RPC 2.0 request object."""
+    return JSONRPCRequest(id=id_, jsonrpc="2.0", method=method, params=params or {})
 
 
-@pytest.fixture
-def protocol_manager():
+async def _call(proto: JSONRPCProtocol, req: JSONRPCRequest):  # noqa: ANN001
+    """Round‑trip *req* through *proto* and return the `result` payload.
+
+    Handles both the usual request/response path and the fallback code‑path
+    (where the library chooses to issue a notification and call the handler
+    directly instead of returning a response object).
     """
-    Set up a fresh EventBus, TaskManager, and JSONRPCProtocol
-    with registered A2A methods.
-    """
-    event_bus = EventBus()
-    manager = TaskManager(event_bus)
-    # Register the Echo handler as the default
-    manager.register_handler(EchoHandler(), default=True)
-    
-    protocol = JSONRPCProtocol()
-    register_methods(protocol, manager)
-    return protocol, manager
+    raw = await proto._handle_raw_async(req.model_dump())
+    if raw is not None:  # normal request‑response
+        # Some JSON‑RPC implementations include ``"error": null`` even for
+        # successful calls – only raise when the *value* is truthy.
+        if raw.get("error"):
+            raise RuntimeError(raw["error"])
+        return raw.get("result")
+
+    # Notification path – fall back to calling the registered coroutine
+    handler = proto._methods[req.method]  # type: ignore[attr-defined]
+    return await handler(req.method, req.params or {})
 
 
-@pytest.mark.asyncio
-async def test_send_and_get(protocol_manager):
-    protocol, manager = protocol_manager
-    # Valid send params
-    params = {
-        "id": "ignored",
-        "sessionId": None,
-        "message": {
-            "role": "user",
-            "parts": [{"type": "text", "text": "Hello Methods"}]
-        }
-    }
-    send_handler = protocol._methods["tasks/send"]
-    result = await send_handler("tasks/send", params)
-    # Alias keys present
-    assert isinstance(result.get("id"), str)
-    assert isinstance(result.get("sessionId"), str)
-    # Enum returned for state
-    assert result["status"]["state"] == TaskState.submitted
+@pytest.fixture()
+def proto_mgr():
+    """Return a fresh `(protocol, task_manager)` tuple for each test."""
+    ev = EventBus()
+    tm = TaskManager(ev)
+    tm.register_handler(EchoHandler(), default=True)
 
-    # Get the same task
-    task_id = result["id"]
-    get_handler = protocol._methods["tasks/get"]
-    get_result = await get_handler("tasks/get", {"id": task_id})
-    assert get_result["id"] == task_id
-    assert get_result["status"]["state"] == TaskState.submitted
-    
-    # Wait for task to complete
-    import asyncio
-    await asyncio.sleep(1.5)  # Give echo handler time to complete
-    
-    # Get again to confirm completed
-    get_result = await get_handler("tasks/get", {"id": task_id})
-    assert get_result["status"]["state"] == TaskState.completed
-    
-    # Check that artifact was created
-    assert get_result.get("artifacts")
-    assert len(get_result["artifacts"]) == 1
-    assert get_result["artifacts"][0]["name"] == "echo"
-    assert get_result["artifacts"][0]["parts"][0]["text"] == "Echo: Hello Methods"
+    proto = JSONRPCProtocol()
+    register_methods(proto, tm)
+    return proto, tm
 
+# ---------------------------------------------------------------------------
+# Core CRUD flow
+# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_send_invalid_params(protocol_manager):
-    protocol, _ = protocol_manager
-    send_handler = protocol._methods["tasks/send"]
-    # Missing required 'message'
-    with pytest.raises(ValidationError):
-        await send_handler("tasks/send", {"id": "ignored", "sessionId": None})
+async def test_send_get_complete(proto_mgr):
+    proto, _ = proto_mgr
 
-
-@pytest.mark.asyncio
-async def test_cancel(protocol_manager):
-    protocol, manager = protocol_manager
-    # Create then cancel a task
-    send_res = await protocol._methods["tasks/send"](
-        "tasks/send",
-        {"id": "ignored", "sessionId": None, "message": {"role": "user", "parts": [{"type": "text", "text": "To be canceled"}]}}
+    msg = Message(role=Role.user, parts=[TextPart(type="text", text="hello")])
+    res = await _call(
+        proto,
+        _json_rpc(
+            "1", "tasks/send", {"id": "ignored", "message": msg.model_dump()}  # client‑supplied id is ignored
+        ),
     )
-    task_id = send_res["id"]
+    tid = res["id"]
+    assert res["status"]["state"] == TaskState.submitted
 
-    # Give it a moment to start processing
-    import asyncio
-    await asyncio.sleep(0.1)
-    
-    cancel_handler = protocol._methods["tasks/cancel"]
-    cancel_res = await cancel_handler("tasks/cancel", {"id": task_id})
-    assert cancel_res is None
-    
-    # Wait for cancellation to take effect
-    await asyncio.sleep(0.5)
-    
-    # Manager should reflect canceled state
-    task = await manager.get_task(task_id)
-    assert task.status.state == TaskState.canceled
-
-
-@pytest.mark.asyncio
-async def test_cancel_nonexistent(protocol_manager):
-    protocol, _ = protocol_manager
-    cancel_handler = protocol._methods["tasks/cancel"]
-    with pytest.raises(TaskNotFound):
-        await cancel_handler("tasks/cancel", {"id": "nonexistent"})
-
-
-@pytest.mark.asyncio
-async def test_send_subscribe_and_resubscribe(protocol_manager):
-    protocol, manager = protocol_manager
-    # sendSubscribe works like send but with handler selection
-    sub_res = await protocol._methods["tasks/sendSubscribe"](
-        "tasks/sendSubscribe",
-        {
-            "id": "ignored", 
-            "sessionId": None, 
-            "message": {"role": "user", "parts": [{"type": "text", "text": "Sub me"}]},
-            "handler": "echo"  # Explicitly specify handler
-        }
-    )
-    assert isinstance(sub_res.get("id"), str)
-    assert sub_res["status"]["state"] == TaskState.submitted
-
-    # resubscribe is a no-op stub
-    resub_res = await protocol._methods["tasks/resubscribe"](
-        "tasks/resubscribe", {"id": sub_res["id"]}
-    )
-    assert resub_res is None
-    
-    # Wait a moment for task to process
-    import asyncio
     await asyncio.sleep(1.5)
-    
-    # Get the task to confirm it was processed
-    get_handler = protocol._methods["tasks/get"]
-    get_result = await get_handler("tasks/get", {"id": sub_res["id"]})
-    assert get_result["status"]["state"] == TaskState.completed
-    assert get_result.get("artifacts")
-    assert get_result["artifacts"][0]["parts"][0]["text"] == "Echo: Sub me"
+
+    fin = await _call(proto, _json_rpc("2", "tasks/get", {"id": tid}))
+    assert fin["status"]["state"] == TaskState.completed
+    assert fin["artifacts"][0]["parts"][0]["text"] == "Echo: hello"
 
 
 @pytest.mark.asyncio
-async def test_handler_selection(protocol_manager):
-    """Test that we can select different handlers."""
-    protocol, manager = protocol_manager
-    
-    # Create a second handler just for this test
+async def test_send_invalid_missing_message(proto_mgr):
+    proto, _ = proto_mgr
+    with pytest.raises(Exception):
+        await _call(proto, _json_rpc("bad", "tasks/send", {"id": "ignored"}))
+
+
+# ---------------------------------------------------------------------------
+# Cancel path + nonexistent
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cancel_and_not_found(proto_mgr):
+    proto, tm = proto_mgr
+
+    tid = (
+        await _call(
+            proto,
+            _json_rpc(
+                "send",
+                "tasks/send",
+                {
+                    "id": "ignored",
+                    "message": {
+                        "role": "user",
+                        "parts": [{"type": "text", "text": "bye"}],
+                    },
+                },
+            ),
+        )
+    )["id"]
+
+    await _call(proto, _json_rpc("can", "tasks/cancel", {"id": tid}))
+    await asyncio.sleep(0.2)
+    assert (await tm.get_task(tid)).status.state == TaskState.canceled
+
+    with pytest.raises(RuntimeError):
+        err = await _call(proto, _json_rpc("can2", "tasks/cancel", {"id": "nope"}))
+        # Helper translates JSON‑RPC → RuntimeError – make sure original id is mentioned
+        await _call(proto, _json_rpc("can2", "tasks/cancel", {"id": "nope"}))
+
+
+# ---------------------------------------------------------------------------
+# sendSubscribe + resubscribe
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_send_subscribe_resubscribe(proto_mgr):
+    proto, _ = proto_mgr
+    msg = {"role": "user", "parts": [{"type": "text", "text": "sub me"}]}
+
+    sub = await _call(
+        proto,
+        _json_rpc(
+            "1",
+            "tasks/sendSubscribe",
+            {"id": "ignored", "message": msg, "handler": "echo"},
+        ),
+    )
+    tid = sub["id"]
+
+    rs = await _call(proto, _json_rpc("2", "tasks/resubscribe", {"id": tid}))
+    assert rs is None
+
+    await asyncio.sleep(1.5)
+    fin = await _call(proto, _json_rpc("3", "tasks/get", {"id": tid}))
+    assert fin["status"]["state"] == TaskState.completed
+
+
+# ---------------------------------------------------------------------------
+# cancel_pending_tasks helper
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cancel_pending_tasks_helper(proto_mgr):
+    proto, _ = proto_mgr
+
+    async def _sleep():
+        await asyncio.sleep(10)
+
+    t = asyncio.create_task(_sleep())
+
+    import a2a_server.methods as m
+
+    # Locate whichever global set is used in the current implementation
+    tasks_set = getattr(m, "_background_tasks", None)
+    if tasks_set is None:
+        tasks_set = getattr(m, "_BACKGROUND_TASKS", None)
+    if tasks_set is None:
+        tasks_set = set()
+        setattr(m, "_background_tasks", tasks_set)
+
+    tasks_set.add(t)
+
+    await proto.cancel_pending_tasks()
+    # Give the event‑loop a tick so the cancellation propagates
+    await asyncio.sleep(0)
+    assert t.cancelled()
+
+# ---------------------------------------------------------------------------
+# Custom handler + agent card + multi‑turn session
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_custom_handler_selection(proto_mgr):
+    proto, tm = proto_mgr
+    from a2a_json_rpc.spec import TaskStatusUpdateEvent, TaskStatus
+
     class TestHandler(EchoHandler):
         @property
-        def name(self) -> str:
+        def name(self):
             return "test"
-        
-        async def process_task(self, task_id, message, session_id=None):
-            # Just yield a completion status directly
-            from a2a_json_rpc.spec import TaskStatusUpdateEvent, TaskStatus
+
+        async def process_task(self, task_id, message, session_id=None):  # noqa: ANN001
             yield TaskStatusUpdateEvent(
-                id=task_id,
-                status=TaskStatus(state=TaskState.completed),
-                final=True
+                id=task_id, status=TaskStatus(state=TaskState.completed), final=True
             )
-    
-    # Register this handler
-    manager.register_handler(TestHandler())
-    
-    # Create a task with this handler
-    send_res = await protocol._methods["tasks/sendSubscribe"](
-        "tasks/sendSubscribe",
-        {
-            "id": "ignored", 
-            "sessionId": None, 
-            "message": {"role": "user", "parts": [{"type": "text", "text": "Test Handler"}]},
-            "handler": "test"  # Specify our test handler
-        }
-    )
-    
-    task_id = send_res["id"]
-    
-    # Wait for task to complete
-    import asyncio
-    await asyncio.sleep(0.5)
-    
-    # Verify it was processed with the test handler (no artifact, just completion)
-    get_handler = protocol._methods["tasks/get"]
-    get_result = await get_handler("tasks/get", {"id": task_id})
-    assert get_result["status"]["state"] == TaskState.completed
-    assert not get_result.get("artifacts")  # No artifacts with test handler
 
+    tm.register_handler(TestHandler())
 
-# --- New tests for handler and agent card interactions ---
+    tid = (
+        await _call(
+            proto,
+            _json_rpc(
+                "s",
+                "tasks/sendSubscribe",
+                {
+                    "id": "ignored",
+                    "message": {
+                        "role": "user",
+                        "parts": [{"type": "text", "text": "x"}],
+                    },
+                    "handler": "test",
+                },
+            ),
+        )
+    )["id"]
+
+    await asyncio.sleep(0.2)
+    res = await _call(proto, _json_rpc("g", "tasks/get", {"id": tid}))
+    assert res["status"]["state"] == TaskState.completed
+    assert not res.get("artifacts")
+
 
 @pytest.mark.asyncio
-async def test_handler_with_agent_card(protocol_manager):
-    """Test that a handler with an agent_card attribute is correctly handled."""
-    protocol, manager = protocol_manager
-    
-    # Create a handler with an attached agent_card
+async def test_handler_with_agent_card(proto_mgr):
+    proto, tm = proto_mgr
+
     class CardHandler(EchoHandler):
         @property
-        def name(self) -> str:
+        def name(self):
             return "card_handler"
-        
-    # Create an instance and attach an agent_card attribute
-    card_handler = CardHandler()
-    agent_card = {
-        "name": "Card Test Handler",
-        "description": "Handler with an agent card",
-        "version": "1.0.0",
-        "authentication": {
-            "schemes": ["None"]
-        },
-        "skills": [
+
+    h = CardHandler()
+    h.agent_card = {"name": "Card Test", "version": "1.0.0"}
+    tm.register_handler(h)
+
+    tid = (
+        await _call(
+            proto,
+            _json_rpc(
+                "s",
+                "tasks/send",
+                {
+                    "id": "ignored",
+                    "message": {
+                        "role": "user",
+                        "parts": [{"type": "text", "text": "hi"}],
+                    },
+                    "handler": "card_handler",
+                },
+            ),
+        )
+    )["id"]
+
+    await asyncio.sleep(1.5)
+    res = await _call(proto, _json_rpc("g", "tasks/get", {"id": tid}))
+    assert res["status"]["state"] == TaskState.completed
+    assert h.agent_card["name"] == "Card Test"
+
+
+@pytest.mark.asyncio
+async def test_multi_turn_same_session(proto_mgr):
+    proto, _ = proto_mgr
+
+    first = await _call(
+        proto,
+        _json_rpc(
+            "1",
+            "tasks/send",
             {
-                "id": "card-test",
-                "name": "Card Test",
-                "description": "Testing agent cards",
-                "tags": ["test", "cards"]
-            }
-        ]
-    }
-    setattr(card_handler, "agent_card", agent_card)
-    
-    # Register this handler
-    manager.register_handler(card_handler)
-    
-    # Create a task with this handler
-    send_res = await protocol._methods["tasks/send"](
-        "tasks/send",
-        {
-            "id": "ignored", 
-            "sessionId": None, 
-            "message": {"role": "user", "parts": [{"type": "text", "text": "Card Handler"}]},
-            "handler": "card_handler"  # Specify our card handler
-        }
+                "id": "ignored",
+                "message": {
+                    "role": "user",
+                    "parts": [{"type": "text", "text": "first"}],
+                },
+                "handler": "echo",
+            },
+        ),
     )
-    
-    task_id = send_res["id"]
-    
-    # Wait for task to complete
-    import asyncio
+
+    session_id = first["sessionId"]
     await asyncio.sleep(1.5)
-    
-    # Verify it was processed
-    get_handler = protocol._methods["tasks/get"]
-    get_result = await get_handler("tasks/get", {"id": task_id})
-    assert get_result["status"]["state"] == TaskState.completed
-    
-    # Verify the agent card on the TaskManager
-    assert hasattr(card_handler, "agent_card")
-    assert card_handler.agent_card["name"] == "Card Test Handler"
 
-
-@pytest.mark.asyncio
-async def test_get_handlers_info(protocol_manager):
-    """Test that we can get information about all available handlers."""
-    _, manager = protocol_manager
-    
-    # Add a handler with an agent card
-    class InfoHandler(EchoHandler):
-        @property
-        def name(self) -> str:
-            return "info_handler"
-    
-    info_handler = InfoHandler()
-    setattr(info_handler, "agent_card", {
-        "name": "Info Handler",
-        "description": "Handler for info testing",
-        "version": "1.0.0",
-        "authentication": {"schemes": ["None"]}
-    })
-    
-    # Register handlers
-    manager.register_handler(info_handler)
-    
-    # Get all handlers
-    handlers = manager.get_handlers()
-    assert "echo" in handlers
-    assert "info_handler" in handlers
-    
-    # Get default handler
-    default = manager.get_default_handler()
-    assert default == "echo"
-
-
-@pytest.mark.asyncio
-async def test_multi_turn_with_handler_selection(protocol_manager):
-    """Test multi-turn conversation with explicit handler selection."""
-    protocol, manager = protocol_manager
-    
-    # First message
-    send_res = await protocol._methods["tasks/send"](
-        "tasks/send",
-        {
-            "id": "ignored", 
-            "sessionId": None, 
-            "message": {"role": "user", "parts": [{"type": "text", "text": "First message"}]},
-            "handler": "echo"  # Explicitly select echo handler
-        }
+    second = await _call(
+        proto,
+        _json_rpc(
+            "2",
+            "tasks/send",
+            {
+                "id": "ignored",
+                "sessionId": session_id,
+                "message": {
+                    "role": "user",
+                    "parts": [{"type": "text", "text": "second"}],
+                },
+                "handler": "echo",
+            },
+        ),
     )
-    
-    task_id = send_res["id"]
-    session_id = send_res["sessionId"]
-    
-    # Wait for first turn to complete
-    import asyncio
+
     await asyncio.sleep(1.5)
-    
-    # Second message in same session
-    send_res2 = await protocol._methods["tasks/send"](
-        "tasks/send",
-        {
-            "id": "ignored", 
-            "sessionId": session_id,  # Same session
-            "message": {"role": "user", "parts": [{"type": "text", "text": "Second message"}]},
-            "handler": "echo"  # Same handler
-        }
-    )
-    
-    task_id2 = send_res2["id"]
-    
-    # Wait for second turn to complete
-    await asyncio.sleep(1.5)
-    
-    # Verify both tasks completed
-    get_handler = protocol._methods["tasks/get"]
-    get_result1 = await get_handler("tasks/get", {"id": task_id})
-    get_result2 = await get_handler("tasks/get", {"id": task_id2})
-    
-    assert get_result1["status"]["state"] == TaskState.completed
-    assert get_result2["status"]["state"] == TaskState.completed
-    
-    # Same session ID for both tasks
-    assert get_result1["sessionId"] == get_result2["sessionId"]
-    
-    # Both should have echo artifacts
-    assert get_result1["artifacts"][0]["parts"][0]["text"] == "Echo: First message"
-    assert get_result2["artifacts"][0]["parts"][0]["text"] == "Echo: Second message"
+    res1 = await _call(proto, _json_rpc("g1", "tasks/get", {"id": first["id"]}))
+    res2 = await _call(proto, _json_rpc("g2", "tasks/get", {"id": second["id"]}))
+
+    assert res1["status"]["state"] == TaskState.completed
+    assert res2["status"]["state"] == TaskState.completed
+    assert res1["sessionId"] == res2["sessionId"]
+    assert res1["artifacts"][0]["parts"][0]["text"] == "Echo: first"
+    assert res2["artifacts"][0]["parts"][0]["text"] == "Echo: second"

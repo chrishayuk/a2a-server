@@ -18,6 +18,11 @@ dependencies = [
   "pyyaml>=6.0.2",
   "google-adk>=0.2.0",
   "litellm>=1.66.3",
+  "python-json-logger>=3.3.0",
+  "prometheus-client>=0.22.0",
+  "opentelemetry-sdk>=1.32.1",
+  "opentelemetry-exporter-otlp>=1.33.1",
+  "opentelemetry-exporter-prometheus>=0.54b1",
 ]
 
 [project.optional-dependencies]

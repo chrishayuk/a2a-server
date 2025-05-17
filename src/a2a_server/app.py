@@ -1,11 +1,11 @@
-# File: a2a_server/app.py
-
+# a2a_server/app.py
 import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Request, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+# ── internal imports ───────────────────────────────────────────────────────
 import a2a_server.diagnosis.debug_events as debug_events
 from a2a_server.diagnosis.flow_diagnosis import apply_flow_tracing
 from a2a_server.pubsub import EventBus
@@ -17,21 +17,26 @@ from a2a_json_rpc.protocol import JSONRPCProtocol
 from a2a_server.methods import register_methods
 from a2a_server.agent_card import get_agent_cards
 
-# our new route modules
+# extra route modules
 from a2a_server.routes import debug as _debug_routes
 from a2a_server.routes import health as _health_routes
 from a2a_server.routes import handlers as _handler_routes
 
-# for root‐level SSE and agent‐card
+# transports
 from a2a_server.transport.sse import _create_sse_response, setup_sse
 from a2a_server.transport.http import setup_http
 from a2a_server.transport.ws import setup_ws
-from a2a_server.agent_card import get_agent_cards
+
+# metrics helper (OpenTelemetry  /  Prometheus)
+from a2a_server import metrics as _metrics  # ← NEW import
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# factory
+# ────────────────────────────────────────────────────────────────────────────
 def create_app(
     handlers: Optional[List[TaskHandler]] = None,
     *,
@@ -43,35 +48,30 @@ def create_app(
     redoc_url: Optional[str] = None,
     openapi_url: Optional[str] = None,
 ) -> FastAPI:
-    """
-    Build the A2A server with JSON‑RPC, SSE and WebSocket transports.
-
-    Debug routes are only mounted when enable_flow_diagnosis=True.
-    """
-
+    """Build and return a fully-wired FastAPI A2A server instance."""
     logger.info("Initializing A2A server components")
 
-    # ── Event bus & optional tracing ────────────────────────────────────
-    event_bus = EventBus()
+    # ── Event bus (+ optional tracing) ────────────────────────────────────
+    event_bus: EventBus = EventBus()
     monitor_coro = None
     if enable_flow_diagnosis:
         logger.info("Enabling flow diagnostics")
         debug_events.enable_debug()
         event_bus = debug_events.add_event_tracing(event_bus)
 
-        # apply tracing to HTTP, SSE & get monitor coroutine
+        # patch transports for trace collection
         http_mod = __import__("a2a_server.transport.http", fromlist=["setup_http"])
         sse_mod = __import__("a2a_server.transport.sse", fromlist=["setup_sse"])
         monitor_coro = apply_flow_tracing(None, http_mod, sse_mod, event_bus)
 
-    # ── Task manager & protocol ────────────────────────────────────────
-    task_manager = TaskManager(event_bus)
+    # ── Task-manager and JSON-RPC protocol ───────────────────────────────
+    task_manager: TaskManager = TaskManager(event_bus)
     if enable_flow_diagnosis:
         task_manager = debug_events.trace_task_manager(task_manager)
 
     protocol = JSONRPCProtocol()
 
-    # ── Handler registration ───────────────────────────────────────────
+    # ── Handler registration ─────────────────────────────────────────────
     if handlers:
         default = handlers[0]
         for h in handlers:
@@ -85,15 +85,12 @@ def create_app(
         logger.info("No handlers specified → using EchoHandler")
         task_manager.register_handler(EchoHandler(), default=True)
 
-    if enable_flow_diagnosis:
-        debug_events.verify_handlers(task_manager)
-
     if handlers_config:
         logger.debug("Handler configurations: %r", handlers_config)
 
     register_methods(protocol, task_manager)
 
-    # ── Create FastAPI + CORS ──────────────────────────────────────────
+    # ── FastAPI app & CORS ───────────────────────────────────────────────
     app = FastAPI(
         title="A2A Server",
         description="Agent-to-Agent JSON-RPC over HTTP, SSE & WebSocket",
@@ -109,23 +106,24 @@ def create_app(
         allow_credentials=True,
     )
 
-    # stash for route modules & hooks
+    # make state available to route modules
     app.state.handlers_config = handlers_config or {}
     app.state.event_bus = event_bus
     app.state.task_manager = task_manager
 
-    # ── Transports ────────────────────────────────────────────────────
+    # ── Transports ───────────────────────────────────────────────────────
     logger.info("Setting up transport layers")
     setup_http(app, protocol, task_manager, event_bus)
     setup_ws(app, protocol, event_bus, task_manager)
     setup_sse(app, event_bus, task_manager)
 
-    # ── Root‐level health, SSE & agent‐card ──────────────────────────
+    # ── Metrics middleware + /metrics endpoint (idempotent) ──────────────
+    _metrics.instrument_app(app)
 
+    # ── Root-level routes (health, events, agent card) ───────────────────
     @app.get("/", include_in_schema=False)
     async def root_health(request: Request, task_ids: Optional[List[str]] = Query(None)):
         if task_ids:
-            # upgrade to SSE streaming
             return await _create_sse_response(app.state.event_bus, task_ids)
         return {
             "service": "A2A Server",
@@ -134,15 +132,12 @@ def create_app(
                 "events": "/events",
                 "ws": "/ws",
                 "agent_card": "/agent-card.json",
+                "metrics": "/metrics",
             },
         }
 
     @app.get("/events", include_in_schema=False)
     async def root_events(request: Request, task_ids: Optional[List[str]] = Query(None)):
-        """
-        Upgrade GET /events?task_ids=<id1>&task_ids=<id2> to an SSE stream
-        of all matching task events.
-        """
         return await _create_sse_response(app.state.event_bus, task_ids)
 
     @app.get("/agent-card.json", include_in_schema=False)
@@ -154,8 +149,9 @@ def create_app(
             return default.dict(exclude_none=True)
         raise HTTPException(status_code=404, detail="No agent card available")
 
-    # ── Startup/shutdown for flow diagnosis monitor ───────────────────────
+    # ── Flow-diagnosis monitor tasks ─────────────────────────────────────
     if monitor_coro:
+
         import asyncio
 
         @app.on_event("startup")
@@ -172,7 +168,7 @@ def create_app(
                 except asyncio.CancelledError:
                     pass
 
-    # ── Mount modular routes ───────────────────────────────────────────
+    # ── Extra route modules ──────────────────────────────────────────────
     if enable_flow_diagnosis:
         _debug_routes.register_debug_routes(app, event_bus, task_manager)
 
