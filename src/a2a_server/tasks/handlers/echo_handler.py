@@ -1,4 +1,4 @@
-# src/a2a_server/tasks/handlers/echo_handler.py
+# a2a_server/tasks/handlers/echo_handler.py
 import asyncio
 
 # a2a imports

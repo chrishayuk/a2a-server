@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
+# a2a_server/run.py
 """
 Async-native CLI entry-point for the A2A server (“python -m a2a_server”).
 """
-
 from __future__ import annotations
 
 import asyncio

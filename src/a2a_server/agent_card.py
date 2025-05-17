@@ -1,9 +1,9 @@
 # File: a2a_server/agent_card.py
 """
-Builds spec‑compliant AgentCards.
+Builds spec-compliant AgentCards.
 
 * `url` → handler root  (…/chef_agent)
-* No extra discovery fields here – `app.py` adds rpcEndpoint / eventsEndpoint
+* No extra discovery fields here - `app.py` adds rpcEndpoint / eventsEndpoint
 """
 
 import logging

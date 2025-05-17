@@ -1,7 +1,9 @@
 # tests/test_run.py
-# tests/cli/test_run.py
 """
-Unit-tests for the async-native CLI entry-point in a2a_server.__main__
+Unit‑tests for the async‑native CLI entry‑point (`a2a_server.run`).
+
+Fixed for httpx ≥ 0.27 (uses `ASGITransport`) and the updated `_serve`
+implementation.
 """
 
 from __future__ import annotations
@@ -9,14 +11,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
-import a2a_server.__main__ as entry
-
+import a2a_server.run as entry
 
 # ---------------------------------------------------------------------------
 # helpers / fixtures
@@ -49,7 +50,6 @@ def _quiet_uvicorn(caplog: pytest.LogCaptureFixture):
 
 
 def test_build_app_returns_fastapi():
-    """_build_app should return a working FastAPI instance."""
     cfg = {
         "handlers": {
             "use_discovery": False,
@@ -63,7 +63,10 @@ def test_build_app_returns_fastapi():
     app = entry._build_app(cfg, _DummyArgs())  # type: ignore[arg-type]
     assert isinstance(app, FastAPI)
 
-    client = httpx.AsyncClient(app=app, base_url="http://test")
+    # httpx ≥ 0.27 uses ASGITransport instead of the deprecated `app=` kwarg
+    transport = httpx.ASGITransport(app)
+    client = httpx.AsyncClient(transport=transport, base_url="http://test")
+
     try:
         resp = asyncio.run(client.get("/"))
         assert resp.status_code == 200
@@ -72,28 +75,28 @@ def test_build_app_returns_fastapi():
 
 
 # ---------------------------------------------------------------------------
-# _serve  (monkey-patch Uvicorn so no real sockets are opened)
+# _serve  (monkey‑patch Uvicorn so no real sockets are opened)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_serve_starts_and_stops_quickly():
-    """_serve should honour `should_exit` and shut down promptly."""
     app = FastAPI()
 
-    async def _fake_serve(self):  # noqa: D401 – stub
+    async def _fake_serve(self):  # noqa: D401
         while not self.should_exit:
-            await asyncio.sleep(0)  # yield control
+            await asyncio.sleep(0)
 
     with patch("uvicorn.Server.serve", new=_fake_serve):
-        task = asyncio.create_task(
-            entry._serve(app, host="127.0.0.1", port=0, log_level="warning")
-        )
+        task = asyncio.create_task(entry._serve(app, host="127.0.0.1", port=0, log_level="warning"))
 
-        await asyncio.sleep(0)          # let it start
+        await asyncio.sleep(0)  # let it start
         assert not task.done()
 
-        # emulate Ctrl-C by flipping the flag used inside _serve
-        task.get_coro().cr_frame.f_locals["server"].should_exit = True
+        # emulate Ctrl‑C: set should_exit; _serve now sets Event after .serve returns
+        frame = task.get_coro().cr_frame
+        frame.f_locals["server"].should_exit = True
+        # also release the stop Event so _serve can finish without awaiting signals
+        frame.f_locals["stop"].set()
 
         await asyncio.wait_for(task, timeout=0.25)

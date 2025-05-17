@@ -4,11 +4,11 @@ Automatic discovery and registration of TaskHandler subclasses.
 
 Two discovery mechanisms are supported:
 
-1. **Package scan** – walk a package tree (default
+1. **Package scan** - walk a package tree (default
    ``a2a_server.tasks.handlers``) and yield every concrete ``TaskHandler``
    subclass it finds.
 
-2. **Entry-points** – load classes registered under the
+2. **Entry-points** - load classes registered under the
    ``a2a.task_handlers`` group.  Works with *importlib.metadata* (Python ≥ 3.10)
    and falls back to *pkg_resources* on older interpreters.
 

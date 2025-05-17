@@ -1,3 +1,4 @@
+# a2a_server/__init__.py
 """
 A2A server module.
 
