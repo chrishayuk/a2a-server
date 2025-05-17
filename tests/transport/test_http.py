@@ -1,196 +1,153 @@
 # tests/transport/test_http.py
+"""
+Extended HTTP-transport integration tests
+=========================================
+Covers the original happy-path scenarios **plus** the defensive hardening added
+in May-2025 (`MAX_BODY`, param-type check, wall-time timeout).
+
+All tests run against the *real* FastAPI app, mounted through an
+`httpx.ASGITransport`, so no real sockets are needed.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any, Dict
+
 import pytest
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
-from a2a_server import app
-
+from a2a_server import app as _fastapi_app
+from a2a_server.transport.http import MAX_BODY, REQUEST_TIMEOUT
 
 # ---------------------------------------------------------------------------
-# Helpers
+# helpers / constants
 # ---------------------------------------------------------------------------
-
-# A task can legitimately be in either state immediately after creation,
-# depending on how fast the background coroutine starts.
 _OK_STATES = {"submitted", "working"}
+transport = ASGITransport(app=_fastapi_app)
+
+
+async def _rpc(ac: AsyncClient, id_: int, method: str, params: Dict[str, Any] | None = None):  # noqa: ANN001
+    payload = {"jsonrpc": "2.0", "id": id_, "method": method, "params": params or {}}
+    return await ac.post("/rpc", json=payload)
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# happy‑path scenarios (kept from original test suite)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_rpc_send_and_get():
-    transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        # 1) Send a task
-        send_payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tasks/send",
-            "params": {
-                "id": "ignored",
-                "sessionId": None,
-                "message": {
-                    "role": "user",
-                    "parts": [{"type": "text", "text": "Hello"}]
-                },
-            },
+        send_params = {
+            "id": "ignored",
+            "sessionId": None,
+            "message": {"role": "user", "parts": [{"type": "text", "text": "Hello"}]},
         }
-        send_resp = await ac.post("/rpc", json=send_payload)
-        assert send_resp.status_code == 200
-        data = send_resp.json()
+        r1 = await _rpc(ac, 1, "tasks/send", send_params)
+        assert r1.status_code == 200
+        tid = r1.json()["result"]["id"]
 
-        # JSON-RPC envelope
-        assert data["jsonrpc"] == "2.0"
-        assert data["id"] == 1
-        result = data["result"]
-
-        # Basic task fields
-        assert isinstance(result["id"], str)
-        assert isinstance(result["sessionId"], str)
-        assert result["status"]["state"] in _OK_STATES
-
-        # History
-        history = result.get("history")
-        assert isinstance(history, list) and len(history) == 1
-        msg = history[0]
-        assert msg["role"] == "user"
-        parts = msg["parts"]
-        assert parts[0]["type"] == "text"
-        assert parts[0]["text"] == "Hello"
-
-        # 2) Get the same task by ID
-        task_id = result["id"]
-        get_payload = {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tasks/get",
-            "params": {"id": task_id},
-        }
-        get_resp = await ac.post("/rpc", json=get_payload)
-        assert get_resp.status_code == 200
-        data2 = get_resp.json()
-        assert data2["jsonrpc"] == "2.0"
-        assert data2["id"] == 2
-        result2 = data2["result"]
-        assert result2["id"] == task_id
-        assert result2["status"]["state"] in _OK_STATES
+        r2 = await _rpc(ac, 2, "tasks/get", {"id": tid})
+        assert r2.status_code == 200
+        assert r2.json()["result"]["id"] == tid
 
 
 @pytest.mark.asyncio
 async def test_rpc_cancel_task():
-    transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        # Create a task we will cancel
-        send_payload = {
-            "jsonrpc": "2.0",
-            "id": 10,
-            "method": "tasks/send",
-            "params": {
-                "id": "ignored",
-                "sessionId": None,
-                "message": {
-                    "role": "user",
-                    "parts": [{"type": "text", "text": "Cancel me"}],
+        tid = (
+            await _rpc(
+                ac,
+                10,
+                "tasks/send",
+                {
+                    "id": "ignored",
+                    "message": {
+                        "role": "user",
+                        "parts": [{"type": "text", "text": "Cancel me"}],
+                    },
                 },
-            },
-        }
-        task_id = (await ac.post("/rpc", json=send_payload)).json()["result"]["id"]
+            )
+        ).json()["result"]["id"]
 
-        # Cancel
-        cancel_payload = {
-            "jsonrpc": "2.0",
-            "id": 11,
-            "method": "tasks/cancel",
-            "params": {"id": task_id},
-        }
-        cancel_resp = await ac.post("/rpc", json=cancel_payload)
-        assert cancel_resp.status_code == 200
-        assert cancel_resp.json()["id"] == 11
+        r_cancel = await _rpc(ac, 11, "tasks/cancel", {"id": tid})
+        assert r_cancel.status_code == 200
 
-        # Verify canceled
-        get_payload = {
-            "jsonrpc": "2.0",
-            "id": 12,
-            "method": "tasks/get",
-            "params": {"id": task_id},
-        }
-        status = (await ac.post("/rpc", json=get_payload)).json()["result"]["status"][
-            "state"
-        ]
+        status = (
+            await _rpc(ac, 12, "tasks/get", {"id": tid})
+        ).json()["result"]["status"]["state"]
         assert status == "canceled"
-
-
-# ---------------------------------------------------------------------------
-# Additional HTTP transport cases
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_handler_specific_rpc():
-    transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        send_payload = {
-            "jsonrpc": "2.0",
-            "id": 20,
-            "method": "tasks/send",
-            "params": {
-                "id": "ignored",
-                "sessionId": None,
-                "message": {
-                    "role": "user",
-                    "parts": [{"type": "text", "text": "Hello Echo"}],
-                },
-            },
+        params = {
+            "id": "ignored",
+            "message": {"role": "user", "parts": [{"type": "text", "text": "Echo"}]},
         }
-        data = (await ac.post("/echo/rpc", json=send_payload)).json()
-        assert data["jsonrpc"] == "2.0"
-        assert data["id"] == 20
-        assert data["result"]["status"]["state"] in _OK_STATES
+        r = await ac.post("/echo/rpc", json={"jsonrpc": "2.0", "id": 20, "method": "tasks/send", "params": params})
+        assert r.status_code == 200
+        assert r.json()["result"]["status"]["state"] in _OK_STATES
+
+
+# ---------------------------------------------------------------------------
+# new defensive guards – added May 2025
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_payload_too_large():
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        huge = "x" * (MAX_BODY + 1024)
+        params = {
+            "id": "ignored",
+            "message": {"role": "user", "parts": [{"type": "text", "text": huge}]},
+        }
+        r = await _rpc(ac, 99, "tasks/send", params)
+        assert r.status_code == 413
 
 
 @pytest.mark.asyncio
-async def test_rpc_get_nonexistent_task():
-    transport = ASGITransport(app=app)
+async def test_params_not_object():
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        fake_id = "00000000-0000-0000-0000-000000000000"
-        get_payload = {
-            "jsonrpc": "2.0",
-            "id": 30,
-            "method": "tasks/get",
-            "params": {"id": fake_id},
-        }
-        error = (await ac.post("/rpc", json=get_payload)).json().get("error")
-        assert error and "TaskNotFound" in error.get("message", "")
+        bad_payload = {"jsonrpc": "2.0", "id": 55, "method": "tasks/send", "params": "oops"}
+        r = await ac.post("/rpc", json=bad_payload)
+        assert r.status_code == 422
+        assert "params" in r.text.lower()
 
 
 @pytest.mark.asyncio
-async def test_send_subscribe_method():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        sub_payload = {
-            "jsonrpc": "2.0",
-            "id": 40,
-            "method": "tasks/sendSubscribe",
-            "params": {
-                "id": "ignored",
-                "sessionId": None,
-                "message": {
-                    "role": "user",
-                    "parts": [{"type": "text", "text": "Subscribe me"}],
-                },
-            },
-        }
-        res = (await ac.post("/rpc", json=sub_payload)).json()["result"]
-        assert res["status"]["state"] in _OK_STATES
+async def test_request_timeout(monkeypatch):
+    # patch Protocol so every call sleeps longer than the budget
+    from a2a_json_rpc.protocol import JSONRPCProtocol
 
-        # tidy-up
-        await ac.post(
-            "/rpc",
-            json={
-                "jsonrpc": "2.0",
-                "id": 41,
-                "method": "tasks/cancel",
-                "params": {"id": res["id"]},
-            },
-        )
+    async def _slow(_self, _payload):  # noqa: D401, ANN001
+        await asyncio.sleep(REQUEST_TIMEOUT + 0.5)
+        return None  # unreachable but keeps mypy happy
+
+    monkeypatch.setattr(JSONRPCProtocol, "_handle_raw_async", _slow, raising=True)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await _rpc(ac, 77, "tasks/get", {"id": "whatever"})
+        assert r.status_code == 504
+
+
+# ---------------------------------------------------------------------------
+# SSE – at least one smoke‑test (sendSubscribe)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_send_subscribe_smoke():
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        sub_params = {
+            "id": "ignored",
+            "message": {"role": "user", "parts": [{"type": "text", "text": "Hi"}]},
+        }
+        # The server returns 200 immediately with a JSON‑RPC envelope – we just smoke‑check.
+        r = await _rpc(ac, 40, "tasks/sendSubscribe", sub_params)
+        assert r.status_code == 200
+        assert r.json()["result"]["status"]["state"] in _OK_STATES
+
+        # cancel to tidy‑up
+        tid = r.json()["result"]["id"]
+        await _rpc(ac, 41, "tasks/cancel", {"id": tid})

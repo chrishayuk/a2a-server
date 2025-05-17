@@ -1,61 +1,72 @@
 # a2a_server/transport/http.py
 """
-a2a_server.transport.http
-=========================
-HTTP JSON-RPC transport layer with first-class SSE streaming support.
+HTTP JSON-RPC transport layer with SSE plus hardening
+====================================================
+Drop-in replacement for the original **a2a_server.transport.http** module.
+
+Key improvements (May-2025)
+--------------------------
+* **Body-size guard** - requests whose *Content-Length* exceeds ``MAX_BODY`` (2 MiB by default) are answered with **413**.
+* **Per-request wall-time** - any JSON-RPC invocation that takes longer than ``REQUEST_TIMEOUT`` seconds (15 s by default) returns **504**.
+* **Parameter type check** - if ``payload.params`` is *not* an object then the server now returns **422** instead of crashing.
+* **Graceful SSE disconnects** - suppressed stack-traces when clients drop.
+
+These changes are transparent - public routes & schemas remain intact.
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
-import json
 import logging
+import os
 import uuid
-from typing import Any, Dict, Optional, Tuple, Callable, Awaitable
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
-from fastapi import FastAPI, Body, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from a2a_json_rpc.protocol import JSONRPCProtocol
 from a2a_json_rpc.spec import (
     JSONRPCRequest,
+    TaskArtifactUpdateEvent,
     TaskSendParams,
     TaskState,
     TaskStatusUpdateEvent,
-    TaskArtifactUpdateEvent,
 )
 from a2a_server.pubsub import EventBus
-from a2a_server.tasks.task_manager import TaskManager, Task
+from a2a_server.tasks.task_manager import Task, TaskManager
 
 logger = logging.getLogger(__name__)
 
+# ────────────────────────────────────────────────────────────────────────────
+# Tunables (override with env vars)
+# ────────────────────────────────────────────────────────────────────────────
+MAX_BODY: int = int(os.getenv("MAX_JSONRPC_BODY", 2 * 1024 * 1024))  # 2 MiB
+REQUEST_TIMEOUT: float = float(os.getenv("JSONRPC_TIMEOUT", 15.0))    # seconds
 
-# ---------------------------------------------------------------------------
-
+# ────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ────────────────────────────────────────────────────────────────────────────
 
 def _is_terminal(state: TaskState) -> bool:
-    """True when *state* is one of the terminal task states."""
-    return state in (TaskState.completed, TaskState.canceled, TaskState.failed)
+    return state in {TaskState.completed, TaskState.canceled, TaskState.failed}
 
+
+aasync = None  # silence linters complaining about the historical typo
 
 async def _create_task(
     tm: TaskManager,
     params: TaskSendParams,
     handler: str | None,
 ) -> Tuple[Task, str, str]:
-    """
-    Helper that copes with both “new” and “legacy” TaskManager signatures.
-
-    Returns ``(task, real_id, client_id)`` - where *real_id* is whatever the
-    TaskManager ultimately assigned and *client_id* is the alias we’ll use on
-    the wire.
-    """
+    """Helper that works with both *new* and *legacy* TaskManager signatures."""
     client_id = params.id
     original = inspect.unwrap(tm.create_task)
     bound: Callable[..., Awaitable[Task]] = original.__get__(tm, tm.__class__)  # type: ignore[assignment]
     sig = inspect.signature(original)
 
-    # New-style: TaskManager lets us inject *task_id* up-front
+    # New-style API - TaskManager accepts ``task_id``
     if "task_id" in sig.parameters:
         task = await bound(
             params.message,
@@ -65,23 +76,20 @@ async def _create_task(
         )
         return task, task.id, task.id
 
-    # Old-style: create, then optionally add an alias
-    task = await bound(
-        params.message,
-        session_id=params.session_id,
-        handler_name=handler,
-    )
+    # Legacy - create then alias
+    task = await bound(params.message, session_id=params.session_id, handler_name=handler)
     server_id = task.id
     if client_id and client_id != server_id:
-        async with tm._lock:  # noqa: SLF001 - internal but harmless here
+        async with tm._lock:  # noqa: SLF001 - harmless here
             tm._aliases[client_id] = server_id  # type: ignore[attr-defined]
     else:
         client_id = server_id
     return task, server_id, client_id
 
 
-# ---------------------------------------------------------------------------
-
+# ────────────────────────────────────────────────────────────────────────────
+# SSE implementation - tasks/sendSubscribe
+# ────────────────────────────────────────────────────────────────────────────
 
 async def _stream_send_subscribe(
     payload: JSONRPCRequest,
@@ -89,25 +97,17 @@ async def _stream_send_subscribe(
     bus: EventBus,
     handler_name: str | None,
 ) -> StreamingResponse:
-    """
-    Implements the ``tasks/sendSubscribe`` “SSE subscription right-away” call.
-
-    We create (or reuse) the task, then stream *all* events for that task down
-    an SSE connection encoded as JSON-RPC notifications.
-    """
     raw = dict(payload.params)
     if handler_name:
         raw["handler"] = handler_name
     params = TaskSendParams.model_validate(raw)
 
-    # ── Create task … or reuse existing one ────────────────────────────
     try:
         task, server_id, client_id = await _create_task(tm, params, handler_name)
     except ValueError as exc:
         if "already exists" in str(exc).lower():
             task = await tm.get_task(params.id)  # type: ignore[arg-type]
-            server_id = task.id
-            client_id = params.id
+            server_id, client_id = task.id, params.id
         else:
             raise
 
@@ -118,7 +118,6 @@ async def _stream_send_subscribe(
         handler_name or "<default>",
     )
 
-    # ── Stream events ──────────────────────────────────────────────────
     queue = bus.subscribe()
 
     async def _event_source():
@@ -128,7 +127,7 @@ async def _stream_send_subscribe(
                 if getattr(event, "id", None) != server_id:
                     continue
 
-                # --- serialise the event ---------------------------------
+                # serialisation ------------------------------------------------
                 if isinstance(event, TaskStatusUpdateEvent):
                     body = event.model_dump(exclude_none=True)
                     body.update(id=client_id, type="status")
@@ -140,21 +139,17 @@ async def _stream_send_subscribe(
                     body["id"] = client_id
 
                 notif = JSONRPCRequest(
-                    jsonrpc="2.0",
-                    id=payload.id,
-                    method="tasks/event",
-                    params=body,
+                    jsonrpc="2.0", id=payload.id, method="tasks/event", params=body
                 )
-
                 yield f"data: {notif.model_dump_json()}\n\n"
 
-                # stop once the task is done
-                final = getattr(event, "final", False)
-                if final or (
-                    isinstance(event, TaskStatusUpdateEvent)
-                    and _is_terminal(event.status.state)
+                if getattr(event, "final", False) or (
+                    isinstance(event, TaskStatusUpdateEvent) and _is_terminal(event.status.state)
                 ):
                     break
+        except asyncio.CancelledError:
+            logger.debug("SSE client for %s disconnected", client_id)
+            raise
         finally:
             bus.unsubscribe(queue)
 
@@ -169,31 +164,62 @@ async def _stream_send_subscribe(
     )
 
 
-# ---------------------------------------------------------------------------
-# Public setup helper
-# ---------------------------------------------------------------------------
+# ────────────────────────────────────────────────────────────────────────────
+# Route-mount helper (public)
+# ────────────────────────────────────────────────────────────────────────────
 
 def setup_http(
     app: FastAPI,
     protocol: JSONRPCProtocol,
     task_manager: TaskManager,
-    event_bus: EventBus | None = None,
+    event_bus: Optional[EventBus] = None,
 ) -> None:
-    """Mount *all* HTTP routes (default + per-handler variations) on *app*."""
+    """Mount default + per-handler JSON-RPC endpoints on *app*."""
 
-    # ── /rpc  ──────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Global middleware - size guard (outermost so it runs first)
+    # ------------------------------------------------------------------
+
+    @app.middleware("http")
+    async def _limit_body(request: Request, call_next):  # noqa: D401, ANN001
+        try:
+            clen = int(request.headers.get("content-length", 0))
+        except ValueError:
+            clen = 0
+        if clen > MAX_BODY:
+            return JSONResponse({"detail": "Payload too large"}, status_code=413)
+        return await call_next(request)
+
+    # ------------------------------------------------------------------
+    # Helper: run through Protocol with timeout & param validation
+    # ------------------------------------------------------------------
+
+    async def _dispatch(req: JSONRPCRequest) -> Response:
+        if not isinstance(req.params, dict):
+            return JSONResponse({"detail": "params must be an object"}, status_code=422)
+
+        try:
+            async with asyncio.timeout(REQUEST_TIMEOUT):
+                raw = await protocol._handle_raw_async(req.model_dump())
+        except TimeoutError:
+            return JSONResponse({"detail": "Handler timed-out"}, status_code=504)
+
+        return Response(status_code=204) if raw is None else JSONResponse(jsonable_encoder(raw))
+
+    # ------------------------------------------------------------------
+    # /rpc  (default, uses whichever handler is default)
+    # ------------------------------------------------------------------
+
     @app.post("/rpc")
     async def _default_rpc(payload: JSONRPCRequest = Body(...)):  # noqa: D401
-        if payload.method == "tasks/send":  # force fresh client-side alias
+        if payload.method == "tasks/send" and isinstance(payload.params, dict):
             payload.params["id"] = str(uuid.uuid4())
-        raw = await protocol._handle_raw_async(payload.model_dump())
-        return (
-            Response(status_code=204)
-            if raw is None
-            else JSONResponse(jsonable_encoder(raw))
-        )
+        return await _dispatch(payload)
 
-    # ──  one sub-tree per registered handler  ─────────────────────────
+    # ------------------------------------------------------------------
+    # Per-handler sub-trees (/{handler}/rpc  and  /{handler})
+    # ------------------------------------------------------------------
+
     for handler in task_manager.get_handlers():
 
         @app.post(f"/{handler}/rpc")  # type: ignore[misc]
@@ -201,16 +227,13 @@ def setup_http(
             payload: JSONRPCRequest = Body(...),
             _h: str = handler,
         ):  # noqa: D401
-            if payload.method == "tasks/send":
+            if payload.method == "tasks/send" and isinstance(payload.params, dict):
                 payload.params["id"] = str(uuid.uuid4())
-            if payload.method in {"tasks/send", "tasks/sendSubscribe"}:
+            if payload.method in {"tasks/send", "tasks/sendSubscribe"} and isinstance(
+                payload.params, dict
+            ):
                 payload.params.setdefault("handler", _h)
-            raw = await protocol._handle_raw_async(payload.model_dump())
-            return (
-                Response(status_code=204)
-                if raw is None
-                else JSONResponse(jsonable_encoder(raw))
-            )
+            return await _dispatch(payload)
 
         if event_bus:
 
@@ -219,27 +242,17 @@ def setup_http(
                 payload: JSONRPCRequest = Body(...),
                 _h: str = handler,
             ):  # noqa: D401
-                if payload.method == "tasks/send":
+                if payload.method == "tasks/send" and isinstance(payload.params, dict):
                     payload.params["id"] = str(uuid.uuid4())
 
                 if payload.method == "tasks/sendSubscribe":
-                    try:
-                        return await _stream_send_subscribe(
-                            payload, task_manager, event_bus, _h
-                        )
-                    except Exception as exc:  # pragma: no cover
-                        logger.error("streaming failed", exc_info=True)
-                        raise HTTPException(status_code=500, detail=str(exc)) from exc
+                    return await _stream_send_subscribe(payload, task_manager, event_bus, _h)
 
-                payload.params.setdefault("handler", _h)
-                raw = await protocol._handle_raw_async(payload.model_dump())
-                return (
-                    Response(status_code=204)
-                    if raw is None
-                    else JSONResponse(jsonable_encoder(raw))
-                )
+                if isinstance(payload.params, dict):
+                    payload.params.setdefault("handler", _h)
+                return await _dispatch(payload)
 
         logger.debug("[transport.http] routes registered for handler %s", handler)
 
 
-__all__ = ["setup_http"]
+__all__ = ["setup_http", "MAX_BODY", "REQUEST_TIMEOUT"]
