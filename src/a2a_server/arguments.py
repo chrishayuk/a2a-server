@@ -37,4 +37,10 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable detailed flow diagnosis and tracing"
     )
+    # Added argument for session support
+    parser.add_argument(
+        "--enable-sessions",
+        action="store_true",
+        help="Enable conversation session tracking with chuk-session-manager"
+    )
     return parser.parse_args()
