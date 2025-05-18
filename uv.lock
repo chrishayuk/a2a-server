@@ -20,12 +20,13 @@ wheels = [
 
 [[package]]
 name = "a2a-server"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "a2a-json-rpc" },
     { name = "aiofiles" },
     { name = "asyncio" },
+    { name = "chuk-session-manager" },
     { name = "fastapi" },
     { name = "google-adk" },
     { name = "httpx" },
@@ -56,6 +57,7 @@ requires-dist = [
     { name = "a2a-json-rpc", specifier = ">=0.1.3" },
     { name = "aiofiles", specifier = ">=24.1.0" },
     { name = "asyncio", specifier = ">=3.4.3" },
+    { name = "chuk-session-manager", specifier = ">=0.1.0" },
     { name = "fastapi", specifier = ">=0.115.12" },
     { name = "google-adk", specifier = ">=0.2.0" },
     { name = "httpx", specifier = ">=0.28.1" },
@@ -335,6 +337,49 @@ wheels = [
 ]
 
 [[package]]
+name = "chuk-mcp"
+version = "0.1.12"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "requests" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f4/45/943aa2101a6ee97e7089ce9f0a753481011b5f6fa9f76af60730195e2726/chuk_mcp-0.1.12.tar.gz", hash = "sha256:ab3283e8b4d1c9b4703777425527e0508f4808f4a099ab7200cb2e95d549b810", size = 20774 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0b/00/2836302ea9bebc96497516b27fe518f32a839d8ef17229ec88bab1caddca/chuk_mcp-0.1.12-py3-none-any.whl", hash = "sha256:43dc5acd0fe624c15102d78bda217a02f98752c7ed7cc5222be2aa4793aff4bc", size = 32567 },
+]
+
+[[package]]
+name = "chuk-session-manager"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiofiles" },
+    { name = "chuk-tool-processor" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ff/e9/8973b0a539044846b815e5c545f9cac00fda82d2d7fd59ed001d5d1a25da/chuk_session_manager-0.1.0.tar.gz", hash = "sha256:9cb896642b36e0e7c366b3e13ba99cbb9e5356c778a6cd63ba0c10f719674f98", size = 36503 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dc/b2/50e9b3b0919df9c8db40edddf44e17362457aa4ca263e9d81efce573b469/chuk_session_manager-0.1.0-py3-none-any.whl", hash = "sha256:270044c38cf11c29a89e62462159b574d391a1f11f9c1423a9c7208fdb94e23f", size = 38492 },
+]
+
+[[package]]
+name = "chuk-tool-processor"
+version = "0.1.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "chuk-mcp" },
+    { name = "dotenv" },
+    { name = "openai" },
+    { name = "pydantic" },
+    { name = "uuid" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d0/88/062ce8e1af577ac5ade19c957fbcce8bf01da6ffdd1f5206ea4b3fdc3571/chuk_tool_processor-0.1.7-py3-none-any.whl", hash = "sha256:09b3c0a7a6c3bc73da4eaa7cc6fed8d3d766ada12a3cc85c6eab63301577e130", size = 88105 },
+]
+
+[[package]]
 name = "click"
 version = "8.1.8"
 source = { registry = "https://pypi.org/simple" }
@@ -422,6 +467,17 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/08/12/9c22a58c0b1e29271051222d8906257616da84135af9ed167c9e28f85cb3/docstring_parser-0.16.tar.gz", hash = "sha256:538beabd0af1e2db0146b6bd3caa526c35a34d61af9fd2887f3a8a27a739aa6e", size = 26565 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d5/7c/e9fcff7623954d86bdc17782036cbf715ecab1bec4847c008557affe1ca8/docstring_parser-0.16-py3-none-any.whl", hash = "sha256:bf0a1387354d3691d102edef7ec124f219ef639982d096e26e3b60aeffa90637", size = 36533 },
+]
+
+[[package]]
+name = "dotenv"
+version = "0.9.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dotenv" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b2/b7/545d2c10c1fc15e48653c91efde329a790f2eecfbbf2bd16003b5db2bab0/dotenv-0.9.9-py2.py3-none-any.whl", hash = "sha256:29cf74a087b31dafdb5a446b6d7e11cbce8ed2741540e2339c69fbef92c94ce9", size = 1892 },
 ]
 
 [[package]]
@@ -1362,7 +1418,7 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "1.75.0"
+version = "1.79.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1374,9 +1430,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/99/b1/318f5d4c482f19c5fcbcde190801bfaaaec23413cda0b88a29f6897448ff/openai-1.75.0.tar.gz", hash = "sha256:fb3ea907efbdb1bcfd0c44507ad9c961afd7dce3147292b54505ecfd17be8fd1", size = 429492 }
+sdist = { url = "https://files.pythonhosted.org/packages/52/cf/4901077dbbfd0d82a814d721600fa0c3a61a093d7f0bf84d0e4732448dc9/openai-1.79.0.tar.gz", hash = "sha256:e3b627aa82858d3e42d16616edc22aa9f7477ee5eb3e6819e9f44a961d899a4c", size = 444736 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/80/9a/f34f163294345f123673ed03e77c33dee2534f3ac1f9d18120384457304d/openai-1.75.0-py3-none-any.whl", hash = "sha256:fe6f932d2ded3b429ff67cc9ad118c71327db32eb9d32dd723de3acfca337125", size = 646972 },
+    { url = "https://files.pythonhosted.org/packages/81/d2/e3992bb7c6641b765c1008e3c96e076e0b50381be2cce344e6ff177bad80/openai-1.79.0-py3-none-any.whl", hash = "sha256:d5050b92d5ef83f869cb8dcd0aca0b2291c3413412500eec40c66981b3966992", size = 683334 },
 ]
 
 [[package]]
@@ -2301,6 +2357,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/8a/78/16493d9c386d8e60e
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6b/11/cc635220681e93a0183390e26485430ca2c7b5f9d33b15c74c2861cb8091/urllib3-2.4.0-py3-none-any.whl", hash = "sha256:4e16665048960a0900c702d4a66415956a584919c03361cac9f1df5c5dd7e813", size = 128680 },
 ]
+
+[[package]]
+name = "uuid"
+version = "1.30"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ce/63/f42f5aa951ebf2c8dac81f77a8edcc1c218640a2a35a03b9ff2d4aa64c3d/uuid-1.30.tar.gz", hash = "sha256:1f87cc004ac5120466f36c5beae48b4c48cc411968eed0eaecd3da82aa96193f", size = 5811 }
 
 [[package]]
 name = "uvicorn"

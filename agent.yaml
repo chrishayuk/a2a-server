@@ -8,7 +8,7 @@ handlers:
   default: pirate_agent
 
   pirate_agent:
-    type: a2a_server.tasks.handlers.google_adk_handler.GoogleADKHandler
+    type: a2a_server.tasks.handlers.adk.google_adk_handler.GoogleADKHandler
     agent: a2a_server.sample_agents.pirate_agent.pirate_agent
     name: pirate_agent
     agent_card:
@@ -41,7 +41,7 @@ handlers:
             - "Arrr! Give me yer loot!"
 
   chef_agent:
-    type: a2a_server.tasks.handlers.google_adk_handler.GoogleADKHandler
+    type: a2a_server.tasks.handlers.adk.google_adk_handler.GoogleADKHandler
     agent: a2a_server.sample_agents.chef_agent.chef_agent
     name: chef_agent
     agent_card:

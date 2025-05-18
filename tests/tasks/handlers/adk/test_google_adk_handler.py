@@ -5,7 +5,7 @@ import pytest
 import asyncio
 from typing import Dict, Any, AsyncIterable, Optional, List
 
-from a2a_server.tasks.handlers.google_adk_handler import GoogleADKHandler
+from a2a_server.tasks.handlers.adk.google_adk_handler import GoogleADKHandler
 from a2a_json_rpc.spec import (
     Message, TextPart, Role, TaskState
 )
