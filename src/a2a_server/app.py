@@ -10,16 +10,10 @@ Additions - May 2025
   remote IP.  Adjust via ``A2A_RATE_LIMIT`` / ``A2A_RATE_WINDOW`` env vars.
 * **Debug/metrics lockdown** - ``/debug*`` and ``/metrics`` are now protected
   with the token guard as well.
-
-Notes
------
-* SSE & WS endpoints remain **unauthenticated** on purpose - front them with
-  your preferred auth gateway.
-* In-memory limiter is *per-process*; if you run multiple workers, stick a
-  smarter limiter (Redis, reverse-proxy, …) in front.
+* **Shared session-store** - single instance created via
+  :func:`a2a_server.session_store_factory.build_session_store` and injected
+  into app state for handlers / routes.
 """
-
-from __future__ import annotations
 
 import asyncio
 import logging
@@ -55,11 +49,14 @@ from a2a_server.transport.ws import setup_ws
 # metrics helper (OpenTelemetry / Prometheus)
 from a2a_server import metrics as _metrics
 
+# 🔹 session-store factory
+from a2a_server.session_store_factory import build_session_store
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 # ---------------------------------------------------------------------------
-# security headers (basic, non-conflicting)                                   
+# security headers (basic, non-conflicting)
 # ---------------------------------------------------------------------------
 
 _SEC_HEADERS: Dict[str, str] = {
@@ -69,7 +66,7 @@ _SEC_HEADERS: Dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# admin-token guard + rate-limit helpers                                      
+# admin-token guard + rate-limit helpers
 # ---------------------------------------------------------------------------
 
 _ADMIN_TOKEN = os.getenv("A2A_ADMIN_TOKEN")
@@ -77,27 +74,27 @@ _MAX_REQ = int(os.getenv("A2A_RATE_LIMIT", "30"))
 _WINDOW = int(os.getenv("A2A_RATE_WINDOW", "60"))  # seconds
 
 _PROTECTED_PREFIXES: tuple[str, ...] = (
-    "/sessions",  # session CRUD / introspection
-    "/analytics",  # any analytics endpoints
-    "/debug",      # debug & flow diagnosis
-    "/metrics",    # prometheus scrape
+    "/sessions",
+    "/analytics",
+    "/debug",
+    "/metrics",
 )
 
 
 def require_admin_token(request: Request) -> None:  # noqa: D401
     """Raise *401* if the caller does not present the valid admin token."""
-    if _ADMIN_TOKEN is None:
-        # no guard configured - open access
+    if _ADMIN_TOKEN is None:  # guard disabled
         return
 
-    # Header twins we accept
     token = (
         request.headers.get("x-a2a-admin-token")
         or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
     )
     if token != _ADMIN_TOKEN:
         logger.debug("Admin-token check failed for %s", request.url.path)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin token"
+        )
 
 
 class _InMemoryRateLimiter:  # pylint: disable=too-few-public-methods
@@ -113,7 +110,6 @@ class _InMemoryRateLimiter:  # pylint: disable=too-few-public-methods
         now = time.monotonic()
         async with self._lock:
             bucket = self._hits.setdefault(key, [])
-            # drop old timestamps
             while bucket and now - bucket[0] > self._window:
                 bucket.pop(0)
             if len(bucket) >= self._max:
@@ -128,6 +124,7 @@ _rate_limiter = _InMemoryRateLimiter(_MAX_REQ, _WINDOW)
 # factory
 # ---------------------------------------------------------------------------
 
+
 def create_app(
     handlers: Optional[List[TaskHandler]] = None,
     *,
@@ -139,15 +136,11 @@ def create_app(
     redoc_url: Optional[str] = None,
     openapi_url: Optional[str] = None,
 ) -> FastAPI:
-    """Return a fully-wired :class:`fastapi.FastAPI` instance for the A2A server.
-
-    ⚠ **Security** - ``/events`` (SSE) and ``/<handler>/ws`` are *public*; put
-    your auth / CSRF layer in front if that matters in your threat-model.
-    """
+    """Return a fully-wired :class:`fastapi.FastAPI` instance for the A2A server."""
 
     logger.info("Initializing A2A server components")
 
-    # ── Event bus (+ optional tracing) ───────────────────────────────────
+    # ── Event bus (+ optional tracing) ─────────────────────────────────
     event_bus: EventBus = EventBus()
     monitor_coro = None
     if enable_flow_diagnosis:
@@ -155,19 +148,23 @@ def create_app(
         debug_events.enable_debug()
         event_bus = debug_events.add_event_tracing(event_bus)
 
-        # patch transports for trace collection
         http_mod = __import__("a2a_server.transport.http", fromlist=["setup_http"])
         sse_mod = __import__("a2a_server.transport.sse", fromlist=["setup_sse"])
         monitor_coro = apply_flow_tracing(None, http_mod, sse_mod, event_bus)
 
-    # ── Task-manager + JSON-RPC proto ────────────────────────────────────
+    # ── 🔹 Build shared session store ──────────────────────────────────
+    sess_cfg = (handlers_config or {}).get("_session_store", {})
+    session_store = session_store = build_session_store()
+    logger.info("Session store initialised via %s", session_store.__class__.__name__)
+
+    # ── Task-manager + JSON-RPC proto ──────────────────────────────────
     task_manager: TaskManager = TaskManager(event_bus)
     if enable_flow_diagnosis:
         task_manager = debug_events.trace_task_manager(task_manager)
 
     protocol = JSONRPCProtocol()
 
-    # ── Handler registration ────────────────────────────────────────────
+    # ── Handler registration ──────────────────────────────────────────
     if handlers:
         default = handlers[0]
         for h in handlers:
@@ -175,7 +172,7 @@ def create_app(
             logger.info("Registered handler %s%s", h.name, " (default)" if h is default else "")
     elif use_discovery:
         logger.info("Using discovery for handlers in %s", handler_packages)
-        register_discovered_handlers(task_manager, packages=handler_packages)
+        register_discovered_handlers(task_manager, packages=handler_packages, extra_kwargs={"session_store": session_store})
     else:
         logger.info("No handlers specified → using EchoHandler")
         task_manager.register_handler(EchoHandler(), default=True)
@@ -185,7 +182,7 @@ def create_app(
 
     register_methods(protocol, task_manager)
 
-    # ── FastAPI app & middleware ────────────────────────────────────────
+    # ── FastAPI app & middleware ──────────────────────────────────────
     app = FastAPI(
         title="A2A Server",
         description="Agent-to-Agent JSON-RPC over HTTP, SSE & WebSocket",
@@ -194,7 +191,6 @@ def create_app(
         openapi_url=openapi_url,
     )
 
-    # CORS open by default - lock down at the proxy layer if needed
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -204,53 +200,54 @@ def create_app(
     )
 
     # ------------------------------------------------------------------
-    # rate-limit middleware - *first* (to reduce load)
+    # rate-limit middleware
     # ------------------------------------------------------------------
-
     @app.middleware("http")
-    async def _rate_limit(request: Request, call_next):  # noqa: D401, ANN001
+    async def _rate_limit(request: Request, call_next):  # noqa: D401
         key = request.client.host if request.client else "unknown"
         if not await _rate_limiter.is_allowed(key):
-            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Rate limit exceeded")
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Rate limit exceeded",
+            )
         return await call_next(request)
 
     # ------------------------------------------------------------------
     # admin-token guard middleware
     # ------------------------------------------------------------------
-
     @app.middleware("http")
-    async def _admin_guard(request: Request, call_next):  # noqa: D401, ANN001
+    async def _admin_guard(request: Request, call_next):  # noqa: D401
         if request.url.path.startswith(_PROTECTED_PREFIXES):
             require_admin_token(request)
         return await call_next(request)
 
     # ------------------------------------------------------------------
-    # security headers middleware - always last so it sees final response
+    # security headers middleware
     # ------------------------------------------------------------------
-
     @app.middleware("http")
-    async def _security_headers(request: Request, call_next):  # noqa: D401, ANN001
+    async def _security_headers(request: Request, call_next):  # noqa: D401
         resp: Response = await call_next(request)
         resp.headers.update(_SEC_HEADERS)
         return resp
 
-    # ── share state with route modules ─────────────────────────────────
+    # ── share state with routes ───────────────────────────────────────
     app.state.handlers_config = handlers_config or {}
     app.state.event_bus = event_bus
     app.state.task_manager = task_manager
+    app.state.session_store = session_store            # 🔹
 
-    # ── Transports ─────────────────────────────────────────────────────
+    # ── Transports ────────────────────────────────────────────────────
     logger.info("Setting up transport layers")
     setup_http(app, protocol, task_manager, event_bus)
     setup_ws(app, protocol, event_bus, task_manager)
     setup_sse(app, event_bus, task_manager)
 
-    # ── Metrics middleware + /metrics endpoint (protected) ─────────────
+    # ── Metrics middleware + /metrics (token-guarded) ────────────────
     _metrics.instrument_app(app)
 
-    # ── Root-level routes ──────────────────────────────────────────────
+    # ── Root routes ───────────────────────────────────────────────────
     @app.get("/", include_in_schema=False)
-    async def root_health(request: Request, task_ids: Optional[List[str]] = Query(None)):  # noqa: D401, ANN001
+    async def root_health(request: Request, task_ids: Optional[List[str]] = Query(None)):  # noqa: D401
         if task_ids:
             return await _create_sse_response(app.state.event_bus, task_ids)
         return {
@@ -265,11 +262,11 @@ def create_app(
         }
 
     @app.get("/events", include_in_schema=False)
-    async def root_events(request: Request, task_ids: Optional[List[str]] = Query(None)):  # noqa: D401, ANN001
+    async def root_events(request: Request, task_ids: Optional[List[str]] = Query(None)):  # noqa: D401
         return await _create_sse_response(app.state.event_bus, task_ids)
 
     @app.get("/agent-card.json", include_in_schema=False)
-    async def root_agent_card(request: Request):  # noqa: D401, ANN001
+    async def root_agent_card(request: Request):  # noqa: D401
         base = str(request.base_url).rstrip("/")
         cards = get_agent_cards(handlers_config or {}, base)
         default = next(iter(cards.values()), None)
@@ -277,13 +274,11 @@ def create_app(
             return default.dict(exclude_none=True)
         raise HTTPException(status_code=404, detail="No agent card available")
 
-    # ── Flow-diagnosis monitor tasks ───────────────────────────────────
+    # ── Flow-diagnosis monitor task ──────────────────────────────────
     if monitor_coro:
-        import asyncio as _asyncio
-
         @app.on_event("startup")
         async def _start_monitor():  # noqa: D401
-            app.state._monitor_task = _asyncio.create_task(monitor_coro())
+            app.state._monitor_task = asyncio.create_task(monitor_coro())
 
         @app.on_event("shutdown")
         async def _stop_monitor():  # noqa: D401
@@ -292,10 +287,10 @@ def create_app(
                 t.cancel()
                 try:
                     await t
-                except _asyncio.CancelledError:
+                except asyncio.CancelledError:
                     pass
 
-    # ── Extra route modules ────────────────────────────────────────────
+    # ── Extra route modules ──────────────────────────────────────────
     DEBUG_A2A = os.getenv("DEBUG_A2A", "0") == "1"
     if enable_flow_diagnosis and DEBUG_A2A:
         _debug_routes.register_debug_routes(app, event_bus, task_manager)
