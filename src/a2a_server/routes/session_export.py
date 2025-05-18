@@ -1,191 +1,247 @@
 #!/usr/bin/env python3
 # a2a_server/routes/session_export.py
 """
-Export and import routes for session data in the A2A server.
+Session import / export utilities for the A2A server.
 
-Provides endpoints for:
-- Exporting session data to JSON
-- Importing session data from JSON
+Routes (all require “internal-admin” header)
+-------------------------------------------
+GET    /sessions                       – list all known session-IDs
+GET    /sessions/{session_id}/export   – download a conversation (JSON)
+POST   /sessions/import                – bulk-import conversation history
+DELETE /sessions/{session_id}          – purge a session from the backing store
 """
 
-from fastapi import FastAPI, Request, HTTPException, Response, Body, Depends
-from fastapi.responses import JSONResponse
-from typing import Dict, List, Optional, Any
+from __future__ import annotations
+
 import json
 import logging
+import os
 import uuid
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from fastapi import (
+    Body,
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+)
+from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
-def register_session_export_routes(app: FastAPI) -> None:
-    """Register routes for session export/import."""
-    
-    @app.get("/sessions/{session_id}/export", tags=["Sessions"], summary="Export a session")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Guard helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ADMIN_HEADER = "X-Internal-Admin"
+_EXPECTED_SECRET = os.getenv("A2A_ADMIN_SECRET")  # optional
+
+
+async def _admin_guard(
+    internal_header: str | None = Header(None, alias=_ADMIN_HEADER),
+):
+    """
+    Very small auth-guard.
+
+    * Header **must** be present.
+    * If `A2A_ADMIN_SECRET` env-var is set, the header value must match.
+    """
+    if internal_header is None:
+        raise HTTPException(status_code=403, detail=f"Missing {_ADMIN_HEADER} header")
+
+    if _EXPECTED_SECRET and internal_header != _EXPECTED_SECRET:
+        raise HTTPException(status_code=403, detail="Bad admin secret")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Capability helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _resolve_handler(request: Request, handler_name: str | None):
+    """Return the TaskHandler instance (or raise 404)."""
+    manager = request.app.state.task_manager
+    if handler_name:
+        if handler_name not in manager.get_handlers():
+            raise HTTPException(status_code=404, detail=f"Handler {handler_name} not found")
+        return manager._handlers[handler_name]
+
+    default_name = manager.get_default_handler()
+    if not default_name:
+        raise HTTPException(status_code=404, detail="No default handler configured")
+    return manager._handlers[default_name]
+
+
+def _check_capability(handler, attr: str, verb: str):
+    """Ensure *handler* exposes *attr* (callable)."""
+    if not hasattr(handler, attr) or not callable(getattr(handler, attr)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Handler {handler.name!s} does not support '{verb}'",
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Route registration
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def register_session_routes(app: FastAPI) -> None:
+    """
+    Attach the guarded session routes to *app*.
+
+    Set the env-var `DISABLE_SESSION_ROUTES=1` to skip registration.
+    """
+    if os.getenv("DISABLE_SESSION_ROUTES") in {"1", "true", "yes"}:
+        logger.info("Session routes are disabled via DISABLE_SESSION_ROUTES")
+        return
+
+    route_dep = [Depends(_admin_guard)]  # shared dependency list
+
+    # ── LIST ────────────────────────────────────────────────────────────
+    @app.get(
+        "/sessions",
+        tags=["Sessions"],
+        summary="List all known sessions",
+        dependencies=route_dep,
+    )
+    async def list_sessions(
+        request: Request,
+        handler_name: str | None = None,
+        with_details: bool = False,
+    ):
+        handler = _resolve_handler(request, handler_name)
+        _check_capability(handler, "list_sessions", "list_sessions")
+
+        try:
+            sessions: list[dict[str, Any]] | list[str] = await handler.list_sessions(
+                detail=with_details
+            )
+        except TypeError:
+            sessions = await handler.list_sessions()  # type: ignore
+
+        return {"handler": handler.name, "sessions": sessions}
+
+    # ── EXPORT ──────────────────────────────────────────────────────────
+    @app.get(
+        "/sessions/{session_id}/export",
+        tags=["Sessions"],
+        summary="Export a session (download as JSON)",
+        dependencies=route_dep,
+    )
     async def export_session(
         session_id: str,
         request: Request,
-        handler_name: Optional[str] = None,
-        include_token_usage: bool = True
+        handler_name: str | None = None,
+        include_token_usage: bool = True,
     ):
-        """
-        Export a session to JSON.
-        
-        Returns a downloadable JSON file containing the session data including:
-        - Conversation history
-        - Token usage statistics (if include_token_usage=True)
-        - Metadata about the session
-        
-        Args:
-            session_id: The session ID to export
-            handler_name: Optional handler name (uses default if not specified)
-            include_token_usage: Whether to include token usage statistics (default: True)
-        """
-        task_manager = request.app.state.task_manager
-        
-        # Get the handler
-        if handler_name:
-            if handler_name not in task_manager.get_handlers():
-                raise HTTPException(status_code=404, detail=f"Handler {handler_name} not found")
-            handler = task_manager._handlers[handler_name]
-        else:
-            default_name = task_manager.get_default_handler()
-            if not default_name:
-                raise HTTPException(status_code=404, detail="No default handler configured")
-            handler = task_manager._handlers[default_name]
-        
-        # Check if the handler supports sessions
-        if not hasattr(handler, "get_conversation_history") or not callable(getattr(handler, "get_conversation_history")):
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Handler {handler.name} does not support sessions"
-            )
-        
+        handler = _resolve_handler(request, handler_name)
+        _check_capability(handler, "get_conversation_history", "session export")
+
         try:
-            # Get conversation history
             history = await handler.get_conversation_history(session_id)
-            
-            # Create export data
-            export_data = {
+            export_data: Dict[str, Any] = {
                 "session_id": session_id,
                 "handler": handler.name,
                 "conversation": history,
-                "exported_at": datetime.now().isoformat()
+                "exported_at": datetime.utcnow().isoformat(),
             }
-            
-            # Add token usage if requested
+
             if include_token_usage and hasattr(handler, "get_token_usage"):
                 try:
-                    token_usage = await handler.get_token_usage(session_id)
-                    export_data["token_usage"] = token_usage
-                except Exception as e:
-                    logger.error(f"Error getting token usage for session {session_id}: {e}")
-            
-            # Set filename for download
+                    export_data["token_usage"] = await handler.get_token_usage(session_id)  # type: ignore
+                except Exception as exc:  # pragma: no cover
+                    logger.warning("Token-usage lookup failed for %s: %s", session_id, exc)
+
             filename = f"session_{session_id}_{handler.name}.json"
-            
-            # Return as downloadable file
             return Response(
                 content=json.dumps(export_data, indent=2),
                 media_type="application/json",
-                headers={"Content-Disposition": f"attachment; filename={filename}"}
+                headers={"Content-Disposition": f"attachment; filename={filename}"},
             )
-        except Exception as e:
-            logger.error(f"Error exporting session: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @app.post("/sessions/import", tags=["Sessions"], summary="Import a session")
-    async def import_session(
-        request: Request,
-        session_data: Dict[str, Any] = Body(...),
-        handler_name: Optional[str] = None
-    ):
-        """
-        Import a session from JSON.
-        
-        Creates a new session using the conversation history from the provided JSON data.
-        
-        Args:
-            session_data: The session data to import
-            handler_name: Optional handler name (uses handler specified in session_data if not provided)
-        
-        Returns:
-            Information about the newly created session
-        """
-        task_manager = request.app.state.task_manager
-        
-        # Validate the import data
-        if "conversation" not in session_data:
-            raise HTTPException(status_code=400, detail="Invalid session data: missing conversation")
-        
-        # Get the handler
-        if handler_name:
-            if handler_name not in task_manager.get_handlers():
-                raise HTTPException(status_code=404, detail=f"Handler {handler_name} not found")
-            handler = task_manager._handlers[handler_name]
-        elif "handler" in session_data:
-            handler_name = session_data["handler"]
-            if handler_name not in task_manager.get_handlers():
-                raise HTTPException(status_code=404, detail=f"Handler {handler_name} not found in import data")
-            handler = task_manager._handlers[handler_name]
-        else:
-            default_name = task_manager.get_default_handler()
-            if not default_name:
-                raise HTTPException(status_code=404, detail="No default handler configured")
-            handler = task_manager._handlers[default_name]
-        
-        # Check if the handler supports sessions
-        if not hasattr(handler, "_get_agent_session_id") or not callable(getattr(handler, "_get_agent_session_id")):
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Handler {handler.name} does not support sessions"
-            )
-        
-        try:
-            # Create a new session
-            new_session_id = str(uuid.uuid4())
-            agent_session_id = handler._get_agent_session_id(new_session_id)
-            if not agent_session_id:
-                raise HTTPException(
-                    status_code=500, 
-                    detail="Failed to create new session"
-                )
-            
-            # Import conversation messages
-            conversation = session_data["conversation"]
-            imported_count = 0
-            
-            for msg in conversation:
-                # Extract role and content from the message
-                role = msg.get("role", "")
-                content = msg.get("content", "")
-                
-                if not content:
-                    continue
-                
-                # Determine if the message is from the agent or user
-                is_agent = role.lower() in ["assistant", "system", "ai", "agent"]
-                
-                # Add the message to the session
-                success = await handler.add_to_session(agent_session_id, content, is_agent=is_agent)
-                if success:
-                    imported_count += 1
-            
-            if imported_count == 0:
-                raise HTTPException(
-                    status_code=400, 
-                    detail="No messages were imported"
-                )
-            
-            return {
-                "status": "success",
-                "message": f"Session imported successfully with ID: {new_session_id}",
-                "new_session_id": new_session_id,
-                "handler": handler.name,
-                "message_count": imported_count
-            }
         except HTTPException:
             raise
-        except Exception as e:
-            logger.error(f"Error importing session: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+        except Exception as exc:
+            logger.exception("Error exporting session %s: %s", session_id, exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # ── IMPORT ──────────────────────────────────────────────────────────
+    @app.post(
+        "/sessions/import",
+        tags=["Sessions"],
+        summary="Import a session",
+        dependencies=route_dep,
+    )
+    async def import_session(
+        request: Request,
+        session_data: Dict[str, Any] = Body(..., examples={"minimal": {"conversation": []}}),
+        handler_name: str | None = None,
+    ):
+        if not session_data.get("conversation"):
+            raise HTTPException(status_code=400, detail="Invalid payload: missing 'conversation' list")
+
+        handler = _resolve_handler(request, handler_name or session_data.get("handler"))
+        _check_capability(handler, "add_to_session", "session import")
+
+        new_session_id = str(uuid.uuid4())
+        agent_session_id = handler._get_agent_session_id(new_session_id)  # type: ignore[attr-defined]
+        if not agent_session_id:
+            raise HTTPException(status_code=500, detail="Failed to create handler session")
+
+        imported = 0
+        for msg in session_data["conversation"]:
+            role = (msg.get("role") or "").lower()
+            content = msg.get("content", "")
+            if not content:
+                continue
+            is_agent = role in {"assistant", "system", "ai", "agent"}
+            ok = await handler.add_to_session(agent_session_id, content, is_agent=is_agent)  # type: ignore[attr-defined]
+            imported += int(bool(ok))
+
+        if not imported:
+            raise HTTPException(status_code=400, detail="No messages imported")
+
+        return JSONResponse(
+            {
+                "status": "success",
+                "new_session_id": new_session_id,
+                "handler": handler.name,
+                "imported_messages": imported,
+            }
+        )
+
+    # ── DELETE ──────────────────────────────────────────────────────────
+    @app.delete(
+        "/sessions/{session_id}",
+        tags=["Sessions"],
+        summary="Delete / purge a session",
+        dependencies=route_dep,
+    )
+    async def delete_session(
+        session_id: str,
+        request: Request,
+        handler_name: str | None = None,
+    ):
+        handler = _resolve_handler(request, handler_name)
+        _check_capability(handler, "delete_session", "delete_session")
+
+        try:
+            removed = await handler.delete_session(session_id)
+            if not removed:
+                raise HTTPException(status_code=404, detail="Session not found or already deleted")
+            return {"status": "success", "session_id": session_id}
+        except HTTPException:
+            raise
+        except Exception as exc:  # pragma: no cover
+            logger.exception("Error deleting session %s: %s", session_id, exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# ── Backwards-compat alias (keep old import path working) ────────────────────
+def register_session_export_routes(app: FastAPI) -> None:  # noqa: D401
+    register_session_routes(app)

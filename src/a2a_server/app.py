@@ -2,24 +2,33 @@
 from __future__ import annotations
 """Application factory for the Agent-to-Agent (A2A) server.
 
-Key additions (May-2025)
-------------------------
-* **Security headers middleware** - adds basic hardening (`X-Content-Type-Options`,
-  `Referrer-Policy`, `Permissions-Policy`) on every response.  This is safe to
-  leave enabled even when you deploy behind an auth proxy / CDN.
-* **README hint** - SSE & WebSocket endpoints remain unauthenticated by design
-  (so you can front-end with whatever auth layer you like).  The generated app
-  docstring now repeats that warning prominently.
-* No behavioural changes to CORS, transports or flow-diagnosis hooks - all
-  existing tests remain green.
+Additions - May 2025
+~~~~~~~~~~~~~~~~~~~~
+* **Security headers** - small hardening shim that is always on.
+* **Token-guard** - simple shared-secret check for *admin* routes.
+* **Rate-limit** - in-memory sliding-window (30req / 60s default), keyed by
+  remote IP.  Adjust via ``A2A_RATE_LIMIT`` / ``A2A_RATE_WINDOW`` env vars.
+* **Debug/metrics lockdown** - ``/debug*`` and ``/metrics`` are now protected
+  with the token guard as well.
+
+Notes
+-----
+* SSE & WS endpoints remain **unauthenticated** on purpose - front them with
+  your preferred auth gateway.
+* In-memory limiter is *per-process*; if you run multiple workers, stick a
+  smarter limiter (Redis, reverse-proxy, …) in front.
 """
 
+from __future__ import annotations
+
+import asyncio
 import logging
+import os
+import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, Request, Query, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
 
 # ── internal imports ───────────────────────────────────────────────────────
 import a2a_server.diagnosis.debug_events as debug_events
@@ -43,7 +52,7 @@ from a2a_server.transport.sse import _create_sse_response, setup_sse
 from a2a_server.transport.http import setup_http
 from a2a_server.transport.ws import setup_ws
 
-# metrics helper (OpenTelemetry  /  Prometheus)
+# metrics helper (OpenTelemetry / Prometheus)
 from a2a_server import metrics as _metrics
 
 logger = logging.getLogger(__name__)
@@ -53,12 +62,67 @@ logger.setLevel(logging.DEBUG)
 # security headers (basic, non-conflicting)                                   
 # ---------------------------------------------------------------------------
 
-_SEC_HEADERS = {
+_SEC_HEADERS: Dict[str, str] = {
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "same-origin",
     "Permissions-Policy": "geolocation=()",  # deny common high-risk perms
 }
 
+# ---------------------------------------------------------------------------
+# admin-token guard + rate-limit helpers                                      
+# ---------------------------------------------------------------------------
+
+_ADMIN_TOKEN = os.getenv("A2A_ADMIN_TOKEN")
+_MAX_REQ = int(os.getenv("A2A_RATE_LIMIT", "30"))
+_WINDOW = int(os.getenv("A2A_RATE_WINDOW", "60"))  # seconds
+
+_PROTECTED_PREFIXES: tuple[str, ...] = (
+    "/sessions",  # session CRUD / introspection
+    "/analytics",  # any analytics endpoints
+    "/debug",      # debug & flow diagnosis
+    "/metrics",    # prometheus scrape
+)
+
+
+def require_admin_token(request: Request) -> None:  # noqa: D401
+    """Raise *401* if the caller does not present the valid admin token."""
+    if _ADMIN_TOKEN is None:
+        # no guard configured - open access
+        return
+
+    # Header twins we accept
+    token = (
+        request.headers.get("x-a2a-admin-token")
+        or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    )
+    if token != _ADMIN_TOKEN:
+        logger.debug("Admin-token check failed for %s", request.url.path)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin token")
+
+
+class _InMemoryRateLimiter:  # pylint: disable=too-few-public-methods
+    """Very small sliding-window rate limiter (per-IP)."""
+
+    def __init__(self, max_requests: int, window_seconds: int) -> None:
+        self._max = max_requests
+        self._window = window_seconds
+        self._hits: Dict[str, List[float]] = {}
+        self._lock = asyncio.Lock()
+
+    async def is_allowed(self, key: str) -> bool:
+        now = time.monotonic()
+        async with self._lock:
+            bucket = self._hits.setdefault(key, [])
+            # drop old timestamps
+            while bucket and now - bucket[0] > self._window:
+                bucket.pop(0)
+            if len(bucket) >= self._max:
+                return False
+            bucket.append(now)
+            return True
+
+
+_rate_limiter = _InMemoryRateLimiter(_MAX_REQ, _WINDOW)
 
 # ---------------------------------------------------------------------------
 # factory
@@ -75,11 +139,10 @@ def create_app(
     redoc_url: Optional[str] = None,
     openapi_url: Optional[str] = None,
 ) -> FastAPI:
-    """Return a fully-wired FastAPI instance for the A2A server.
+    """Return a fully-wired :class:`fastapi.FastAPI` instance for the A2A server.
 
-    ⚠ **Security note** - `/events` (SSE) and `/<handler>/ws` endpoints carry
-    *no* authentication or CSRF protection.  In production you *must* deploy
-    behind an auth-terminating reverse-proxy or gateway.
+    ⚠ **Security** - ``/events`` (SSE) and ``/<handler>/ws`` are *public*; put
+    your auth / CSRF layer in front if that matters in your threat-model.
     """
 
     logger.info("Initializing A2A server components")
@@ -131,6 +194,7 @@ def create_app(
         openapi_url=openapi_url,
     )
 
+    # CORS open by default - lock down at the proxy layer if needed
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -139,13 +203,38 @@ def create_app(
         allow_credentials=True,
     )
 
+    # ------------------------------------------------------------------
+    # rate-limit middleware - *first* (to reduce load)
+    # ------------------------------------------------------------------
+
     @app.middleware("http")
-    async def _security_headers(request, call_next):  # noqa: D401, ANN001
+    async def _rate_limit(request: Request, call_next):  # noqa: D401, ANN001
+        key = request.client.host if request.client else "unknown"
+        if not await _rate_limiter.is_allowed(key):
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Rate limit exceeded")
+        return await call_next(request)
+
+    # ------------------------------------------------------------------
+    # admin-token guard middleware
+    # ------------------------------------------------------------------
+
+    @app.middleware("http")
+    async def _admin_guard(request: Request, call_next):  # noqa: D401, ANN001
+        if request.url.path.startswith(_PROTECTED_PREFIXES):
+            require_admin_token(request)
+        return await call_next(request)
+
+    # ------------------------------------------------------------------
+    # security headers middleware - always last so it sees final response
+    # ------------------------------------------------------------------
+
+    @app.middleware("http")
+    async def _security_headers(request: Request, call_next):  # noqa: D401, ANN001
         resp: Response = await call_next(request)
         resp.headers.update(_SEC_HEADERS)
         return resp
 
-    # share state with route modules
+    # ── share state with route modules ─────────────────────────────────
     app.state.handlers_config = handlers_config or {}
     app.state.event_bus = event_bus
     app.state.task_manager = task_manager
@@ -156,7 +245,7 @@ def create_app(
     setup_ws(app, protocol, event_bus, task_manager)
     setup_sse(app, event_bus, task_manager)
 
-    # ── Metrics middleware + /metrics endpoint ─────────────────────────
+    # ── Metrics middleware + /metrics endpoint (protected) ─────────────
     _metrics.instrument_app(app)
 
     # ── Root-level routes ──────────────────────────────────────────────
@@ -166,7 +255,13 @@ def create_app(
             return await _create_sse_response(app.state.event_bus, task_ids)
         return {
             "service": "A2A Server",
-            "endpoints": {"rpc": "/rpc", "events": "/events", "ws": "/ws", "agent_card": "/agent-card.json", "metrics": "/metrics"},
+            "endpoints": {
+                "rpc": "/rpc",
+                "events": "/events",
+                "ws": "/ws",
+                "agent_card": "/agent-card.json",
+                "metrics": "/metrics",
+            },
         }
 
     @app.get("/events", include_in_schema=False)
@@ -184,11 +279,11 @@ def create_app(
 
     # ── Flow-diagnosis monitor tasks ───────────────────────────────────
     if monitor_coro:
-        import asyncio
+        import asyncio as _asyncio
 
         @app.on_event("startup")
         async def _start_monitor():  # noqa: D401
-            app.state._monitor_task = asyncio.create_task(monitor_coro())
+            app.state._monitor_task = _asyncio.create_task(monitor_coro())
 
         @app.on_event("shutdown")
         async def _stop_monitor():  # noqa: D401
@@ -197,11 +292,12 @@ def create_app(
                 t.cancel()
                 try:
                     await t
-                except asyncio.CancelledError:
+                except _asyncio.CancelledError:
                     pass
 
     # ── Extra route modules ────────────────────────────────────────────
-    if enable_flow_diagnosis:
+    DEBUG_A2A = os.getenv("DEBUG_A2A", "0") == "1"
+    if enable_flow_diagnosis and DEBUG_A2A:
         _debug_routes.register_debug_routes(app, event_bus, task_manager)
 
     _health_routes.register_health_routes(app, task_manager, handlers_config)
