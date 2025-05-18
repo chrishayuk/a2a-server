@@ -3,6 +3,10 @@ server:
   host: 0.0.0.0
   port: 8000
 
+# _session_store:
+#   backend: redis
+#   redis_url: redis://redis:6379/0
+
 handlers:
   use_discovery: false
   default: pirate_agent
