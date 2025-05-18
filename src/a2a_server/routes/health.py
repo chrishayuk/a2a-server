@@ -1,4 +1,6 @@
-# File: a2a_server/routes/health.py
+#!/usr/bin/env python3
+# File: a2a_server/routes/health.py (Updated)
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -33,7 +35,8 @@ def register_health_routes(
 
         card = app.state.agent_cards.get(default)
         if card:
-            return card.dict(exclude_none=True)
+            # Updated: Use model_dump() instead of dict()
+            return card.model_dump(exclude_none=True)
 
         # fallback minimal card
         return {

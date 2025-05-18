@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-# File: a2a_server/routes/handlers.py
+# File: a2a_server/routes/handlers.py (Updated)
 
 import logging
 from typing import List, Optional
 from fastapi import FastAPI, Request, Query
 
-# a2a imports
+# a2a imports
 from a2a_server.agent_card import get_agent_cards
 from a2a_server.transport.sse import _create_sse_response
 
@@ -54,7 +54,8 @@ def register_handler_routes(
                 app.state.agent_cards = get_agent_cards(handlers_config, base)
             card = app.state.agent_cards.get(_h)
             if card:
-                return card.dict(exclude_none=True)
+                # Updated: Use model_dump() instead of dict()
+                return card.model_dump(exclude_none=True)
 
             # fallback minimal agent-card, now with "mount"
             return {
