@@ -72,3 +72,13 @@ handlers:
             - recipes
           examples:
             - "What can I make with chicken, mushrooms, and rice?"
+
+  time_ticker:
+    type: a2a_server.tasks.handlers.time_ticker_handler.TimeTickerHandler
+    name: time_ticker
+    #url: "https://a2a-server.fly.dev/time_ticker"
+    agent_card:
+      name: Time Ticker
+      description: Streams the current time for 10 seconds
+      capabilities: { streaming: true }
+
