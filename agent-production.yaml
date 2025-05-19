@@ -76,3 +76,23 @@ handlers:
             - recipes
           examples:
             - "What can I make with chicken, mushrooms, and rice?"
+
+  time_ticker:
+    type: a2a_server.tasks.handlers.time_ticker_handler.TimeTickerHandler
+    name: time_ticker
+    url: "https://a2a-server.fly.dev/time_ticker"
+    agent_card:
+      name: Time Ticker
+      description: Streams the current time for 10 seconds
+      capabilities: { streaming: true }
+
+  pirate_vision:
+    type: a2a_server.tasks.handlers.pirate_vision_handler.PirateVisionHandler
+    name: pirate_vision
+    agent_card:
+      name: Pirate Vision
+      # modes tell the client what to send/expect
+      defaultInputModes:  ["image_base64"]
+      defaultOutputModes: ["text/plain"]
+      description: Looks at image and sends something back in pirate speak (base64)
+      capabilities: { streaming: true }
