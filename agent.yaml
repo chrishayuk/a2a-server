@@ -5,8 +5,7 @@ server:
 
 handlers:
   use_discovery: false
-  default: pirate_agent
-
+  default_handler: pirate_agent
   pirate_agent:
     type: a2a_server.tasks.handlers.adk.google_adk_handler.GoogleADKHandler
     agent: a2a_server.sample_agents.pirate_agent.pirate_agent
@@ -82,3 +81,21 @@ handlers:
       description: Streams the current time for 10 seconds
       capabilities: { streaming: true }
 
+  image_echo:
+    type: a2a_server.tasks.handlers.image_echo_handler.ImageEchoHandler
+    name: image_echo
+    agent_card:
+      name: Image Echo
+      description: Echoes an image back (base64)
+      capabilities: { streaming: true }
+
+  pirate_vision:
+    type: a2a_server.tasks.handlers.pirate_vision_handler.PirateVisionHandler
+    name: pirate_vision
+    agent_card:
+      name: Pirate Vision
+      # modes tell the client what to send/expect
+      defaultInputModes:  ["image_base64"]
+      defaultOutputModes: ["text/plain"]
+      description: Looks at image and sends something back in pirate speak (base64)
+      capabilities: { streaming: true }
