@@ -71,7 +71,9 @@ def get_agent_cards(
 ) -> Dict[str, SpecAgentCard]:
     cards: Dict[str, SpecAgentCard] = {}
     for name, cfg in handlers_cfg.items():
-        if name in ("use_discovery", "handler_packages", "default"):
+        if name in ("use_discovery", "handler_packages", "default", "default_handler"):
+            continue
+        if not isinstance(cfg, dict):  # ✅ skip strings
             continue
         try:
             cards[name] = create_agent_card(name, base_url, cfg)
