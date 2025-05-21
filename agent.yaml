@@ -100,7 +100,7 @@ handlers:
       description: Looks at image and sends something back in pirate speak (base64)
       capabilities: { streaming: true }
   chuk_chef:
-    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
+    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.ChukAgentHandler
     agent: a2a_server.sample_agents.chuk_chef.chef_agent
     name: chuk_chef
     agent_card:

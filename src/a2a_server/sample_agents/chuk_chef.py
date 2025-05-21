@@ -1,10 +1,9 @@
-# a2a_server/sample_agents/chef_agent.py
 """
 Sample chef agent implementation using ChukAgent.
 """
 from a2a_server.tasks.handlers.chuk.chuk_agent import ChukAgent
 
-# Define a chef agent using the ChukAgent abstraction
+# Create a pure agent instance - this is all you need!
 chef_agent = ChukAgent(
     name="chef_agent",
     provider="openai",
@@ -24,5 +23,5 @@ chef_agent = ChukAgent(
         "If asked about ingredient substitutions, explain how the substitute will "
         "affect flavor, texture, and cooking time."
     ),
-    streaming=True  # Enable streaming for a more interactive experience
+    streaming=True
 )
