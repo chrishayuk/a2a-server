@@ -45,7 +45,7 @@ class ChukAgentAdapter:
         if streaming != agent.streaming:
             agent.streaming = streaming
             
-        logger.info(f"Initialized AgentAdapter for agent '{agent.name}'")
+        logger.info(f"Initialized ChukAgentAdapter for agent '{agent.name}'")
     
     def _extract_message_content(self, message: Message) -> Union[str, List[Dict[str, Any]]]:
         """
@@ -195,11 +195,8 @@ class ChukAgentAdapter:
         else:
             user_content_str = raw_user_content
         
-        # Ensure we don't have empty content
         if not user_content_str or user_content_str.strip() == "" or user_content_str == "Empty message":
-            # Try to recover from the message object itself
             try:
-                # Access raw parts if available
                 if hasattr(message, 'parts') and message.parts:
                     part_texts = []
                     for part in message.parts:
@@ -207,42 +204,33 @@ class ChukAgentAdapter:
                             text = part._obj.get('text')
                             if text:
                                 part_texts.append(text)
-                    
                     if part_texts:
                         user_content_str = " ".join(part_texts)
-                
-                # If still empty, try message.__dict__
+
                 if not user_content_str or user_content_str.strip() == "":
                     if hasattr(message, '__dict__'):
                         for attr_name, attr_value in message.__dict__.items():
                             if isinstance(attr_value, str) and attr_value.strip():
                                 user_content_str = attr_value
                                 break
-                        
-                    # Last resort - use the string representation
+
                     if not user_content_str or user_content_str.strip() == "":
                         user_content_str = str(message)
             except Exception:
                 pass
-                
-            # If still empty, use a placeholder
+
             if not user_content_str or user_content_str.strip() == "":
                 user_content_str = f"Message from user at {task_id[-8:]}"
         
-        # Prepare messages for the LLM
         llm_messages = []
         
-        # Use the conversation manager if available
         if self.conversation_manager and session_id:
             try:
-                # Add the user message to the session
                 await self.conversation_manager.add_message(
                     session_id, 
                     user_content_str, 
                     is_agent=False
                 )
-                
-                # Get context from the session
                 context = await self.conversation_manager.get_context(session_id)
                 if context:
                     llm_messages = context
@@ -252,65 +240,47 @@ class ChukAgentAdapter:
                 logger.error(f"Error using conversation manager: {e}")
                 llm_messages = [{"role": "system", "content": self.agent.instruction}]
         else:
-            # Basic formatting without conversation manager
             llm_messages = [{"role": "system", "content": self.agent.instruction}]
         
-        # Add the current user message if not already in context
         if not llm_messages or llm_messages[-1].get("role") != "user":
             llm_messages.append({"role": "user", "content": user_content_str})
         
-        # Track response state
         started_generating = False
         full_response = ""
-        
+
         try:
-            # Generate response with the agent
             response_generator = await self.agent.generate_response(llm_messages)
-            
-            if self.streaming and hasattr(response_generator, "__aiter__"):
-                # Process streaming response
+
+            if hasattr(response_generator, "__aiter__"):
+                # Streaming case
                 async for chunk in response_generator:
-                    # Extract delta text
                     delta = chunk.get("response", "")
-                    
-                    # Handle text response
                     if delta:
                         full_response += delta
-                        
-                        # Create/update response artifact
-                        if not started_generating:
-                            started_generating = True
-                            artifact = Artifact(
-                                name=f"{self.agent.name}_response",
-                                parts=[TextPart(type="text", text=delta)],
-                                index=0
-                            )
-                        else:
-                            artifact = Artifact(
-                                name=f"{self.agent.name}_response",
-                                parts=[TextPart(type="text", text=full_response)],
-                                index=0
-                            )
-                        
-                        yield TaskArtifactUpdateEvent(
-                            id=task_id,
-                            artifact=artifact
+
+                        artifact = Artifact(
+                            name=f"{self.agent.name}_response",
+                            parts=[TextPart(type="text", text=delta if not started_generating else full_response)],
+                            index=0
                         )
-                        
-                        # Small delay to avoid overwhelming the client
+
+                        started_generating = True
+                        yield TaskArtifactUpdateEvent(id=task_id, artifact=artifact)
                         await asyncio.sleep(0.01)
             else:
-                # Non-streaming mode or received complete response
-                if hasattr(response_generator, "get"):
-                    # Complete response object
+                # Non-streaming response (e.g. from tool calls)
+                if isinstance(response_generator, dict):
                     text_response = response_generator.get("response", "")
+                    if not text_response:
+                        if "tool_calls" in response_generator:
+                            text_response = "Tool executed but returned no direct response."
+                        else:
+                            text_response = str(response_generator)
                 else:
-                    # In case we got a string or other non-dict response
                     text_response = str(response_generator)
-                
+
                 full_response = text_response
-                
-                # Create response artifact
+
                 yield TaskArtifactUpdateEvent(
                     id=task_id,
                     artifact=Artifact(
@@ -319,33 +289,27 @@ class ChukAgentAdapter:
                         index=0
                     )
                 )
-            
-            # Add assistant response to session if using conversation manager
+
             if self.conversation_manager and session_id and full_response:
                 await self.conversation_manager.add_message(
                     session_id,
                     full_response,
                     is_agent=True
                 )
-            
-            # Complete the task
+
             yield TaskStatusUpdateEvent(
                 id=task_id,
                 status=TaskStatus(state=TaskState.completed),
                 final=True
             )
-            
+
         except Exception as e:
             logger.error(f"Error processing message: {e}")
-            
-            # Yield error status
             yield TaskStatusUpdateEvent(
                 id=task_id,
                 status=TaskStatus(state=TaskState.failed),
                 final=True
             )
-            
-            # Add error as artifact
             yield TaskArtifactUpdateEvent(
                 id=task_id,
                 artifact=Artifact(
@@ -354,3 +318,4 @@ class ChukAgentAdapter:
                     index=0
                 )
             )
+
