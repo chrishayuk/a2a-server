@@ -262,6 +262,50 @@ You are a helpful assistant named {name}.
                             },
                             "required": ["time", "source_timezone", "target_timezone"]
                         }
+                    elif real_name == "tools.get_weather":
+                        desc = "Get current weather information for a specific city"
+                        params = {
+                            "type": "object",
+                            "properties": {
+                                "city": {
+                                    "type": "string",
+                                    "description": "Name of the city to get weather for (e.g., 'New York', 'London', 'Tokyo')"
+                                }
+                            },
+                            "required": ["city"]
+                        }
+                    elif real_name == "tools.get_weather_by_datetime_range":
+                        desc = "Get weather information for a specific date range"
+                        params = {
+                            "type": "object",
+                            "properties": {
+                                "city": {
+                                    "type": "string",
+                                    "description": "Name of the city to get weather for"
+                                },
+                                "start_date": {
+                                    "type": "string",
+                                    "description": "Start date in YYYY-MM-DD format"
+                                },
+                                "end_date": {
+                                    "type": "string",
+                                    "description": "End date in YYYY-MM-DD format"
+                                }
+                            },
+                            "required": ["city", "start_date", "end_date"]
+                        }
+                    elif real_name == "tools.get_current_datetime":
+                        desc = "Get current datetime in a specific timezone"
+                        params = {
+                            "type": "object",
+                            "properties": {
+                                "timezone_name": {
+                                    "type": "string",
+                                    "description": "IANA timezone name (e.g., 'America/New_York', 'Europe/London'). If not provided, uses UTC."
+                                }
+                            },
+                            "required": []
+                        }
                 
             except Exception as e:
                 logger.warning(f"Could not get tool metadata for '{real_name}': {e}")
