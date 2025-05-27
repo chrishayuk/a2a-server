@@ -7,7 +7,7 @@ handlers:
   use_discovery: false
   default_handler: chuk_chef
   chuk_chef:
-    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.ChukAgentHandler
+    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
     agent: a2a_server.sample_agents.chuk_chef.chef_agent
     name: chuk_chef
     agent_card:
@@ -37,8 +37,7 @@ handlers:
             - cooking
             - recipes
           examples:
-            - "What can I make with chicken, mushrooms, and rice?"
-
+            - "What can I make with chicken, mushrooms, and rice?"  
   pirate_agent:
     type: a2a_server.tasks.handlers.adk.google_adk_handler.GoogleADKHandler
     agent: a2a_server.sample_agents.pirate_agent.pirate_agent
@@ -132,70 +131,3 @@ handlers:
       defaultOutputModes: ["text/plain"]
       description: Looks at image and sends something back in pirate speak (base64)
       capabilities: { streaming: true }
-  
-  time_agent:
-    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.ChukAgentHandler
-    agent: a2a_server.sample_agents.time_agent.time_agent
-    name: time_agent
-    agent_card:
-      name: Time Agent
-      description: "Get the time from an mcp server"
-      #url: "https://a2a-server.fly.dev/chef_agent"
-      version: "0.1.0"
-      documentationUrl: "https://a2a-server.fly.dev/chuK_chef/docs"
-      provider:
-        organization: "chrishayuk"
-        url: "https://chrishayuk.io"
-      capabilities:
-        streaming: true
-        pushNotifications: false
-      authentication:
-        schemes:
-          - "None"
-      defaultInputModes:
-        - "text/plain"
-      defaultOutputModes:
-        - "text/plain"
-      skills:
-        - id: time-telling
-          name: Time Telling
-          description: "Tells the time"
-          tags:
-            - time
-            - time conversion
-          examples:
-            - "What is the current time in new york"
-
-  weather_agent:
-    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.ChukAgentHandler
-    agent: a2a_server.sample_agents.weather_agent.weather_agent
-    name: weather_agent
-    agent_card:
-      name: Weather Agent
-      description: "Get weather information for any city"
-      version: "0.1.0"
-      documentationUrl: "https://a2a-server.fly.dev/weather_agent/docs"
-      provider:
-        organization: "chrishayuk"
-        url: "https://chrishayuk.io"
-      capabilities:
-        streaming: true
-        pushNotifications: false
-      authentication:
-        schemes:
-          - "None"
-      defaultInputModes:
-        - "text/plain"
-      defaultOutputModes:
-        - "text/plain"
-      skills:
-        - id: weather-forecast
-          name: Weather Forecast
-          description: "Get current weather and forecasts"
-          tags:
-            - weather
-            - forecast
-            - climate
-          examples:
-            - "What's the weather like in London?"
-            - "Will it rain in Tokyo tomorrow?"

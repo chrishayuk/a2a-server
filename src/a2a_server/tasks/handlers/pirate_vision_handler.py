@@ -1,11 +1,12 @@
+# a2a_server/tasks/handlers/pirate_vision_handler.py
 from __future__ import annotations
 
 """
-Pirate‑Vision handler
+Pirate-Vision handler
 ~~~~~~~~~~~~~~~~~~~~~
-Receives an image and responds with streaming pirate‑speak text describing it.
+Receives an image and responds with streaming pirate-speak text describing it.
 Designed to demonstrate multimodal **continuous** updates (artifact streaming)
-so front‑ends can test incremental delivery.
+so front-ends can test incremental delivery.
 """
 
 import asyncio

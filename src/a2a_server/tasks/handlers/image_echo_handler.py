@@ -1,18 +1,19 @@
+# a2a_server/tasks/handlers/image_echo_handler.py
 from __future__ import annotations
 
-"""Image‑Echo handler (v1.3)
+"""Image-Echo handler (v1.3)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Robustly echoes back **one** image (as base‑64) regardless of whether the
+Robustly echoes back **one** image (as base64) regardless of whether the
 caller sends:
 
-* `image_base64` → `{type:"image_base64", data:"<b64>"}`
-* `image_file`   → `{type:"image_file", path:"./pic.png"}` **or** `{file:"./pic.png"}`
-* `image_file`   → _same object_ but with a **`data`** key already holding the
-  base64 string (A2A‑CLI < 0.4 does this)
-* `image_url`    → `{type:"image_url", url:"https://…"}`
+* `image_base64` → `{type:"image_base64", data:"<b64>"}`
+* `image_file`   → `{type:"image_file", path:"./pic.png"}` **or** `{file:"./pic.png"}`
+* `image_file`   → _same object_ but with a **`data`** key already holding the
+  base64 string (A2A-CLI < 0.4 does this)
+* `image_url`    → `{type:"image_url", url:"https://…"}`
 
-If the handler can’t load the image it now returns **TaskState.failed** with
-`status.message` describing the root cause – visible in the CLI.
+If the handler can't load the image it now returns **TaskState.failed** with
+`status.message` describing the root cause - visible in the CLI.
 """
 
 import base64

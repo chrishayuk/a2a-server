@@ -29,7 +29,7 @@ handlers:
 Start the server:
 
 ```bash
-a2a-server --config agent.yaml
+uv run a2a-server --config agent.yaml
 ```
 
 That's it! Your server is now running with a pirate-speaking agent.
