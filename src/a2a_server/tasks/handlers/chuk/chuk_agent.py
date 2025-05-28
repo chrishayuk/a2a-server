@@ -1,13 +1,12 @@
-# a2a_server/tasks/handlers/chuk/chuk_agent.py
 """
-ChukAgent: A high-level agent abstraction using chuk-llm for a2a server integration,
-with advanced session management powered by chuk_session_manager.
+ChukAgent: A pure agent abstraction with chuk-tool-processor as the native tool calling engine
 """
 import asyncio
 import json
 import logging
 import re
 from typing import Dict, List, Any, Optional, Union, AsyncGenerator
+from pathlib import Path
 
 # a2a imports
 from a2a_json_rpc.spec import (
@@ -19,12 +18,18 @@ from a2a_json_rpc.spec import (
 from chuk_llm.llm.llm_client import get_llm_client
 from chuk_llm.llm.configuration.provider_config import ProviderConfig
 
+# chuk-tool-processor imports (native tool calling engine)
+from chuk_tool_processor.registry.provider import ToolRegistryProvider
+from chuk_tool_processor.mcp.setup_mcp_stdio import setup_mcp_stdio
+from chuk_tool_processor.execution.tool_executor import ToolExecutor
+from chuk_tool_processor.execution.strategies.inprocess_strategy import InProcessStrategy
+from chuk_tool_processor.models.tool_call import ToolCall
+
 logger = logging.getLogger(__name__)
 
 class ChukAgent:
     """
-    A high-level agent abstraction using chuk-llm for a2a server integration,
-    with advanced session management powered by chuk_session_manager.
+    A pure agent abstraction with chuk-tool-processor as the native tool calling engine.
     """
     
     def __init__(
@@ -36,12 +41,18 @@ class ChukAgent:
         model: Optional[str] = None,
         streaming: bool = True,
         config: Optional[ProviderConfig] = None,
+        mcp_config_file: Optional[str] = None,
+        mcp_servers: Optional[List[str]] = None,
+        tool_namespace: str = "tools",
+        max_concurrency: int = 4,
+        tool_timeout: float = 30.0,
+        enable_tools: bool = True,
         token_threshold: int = 4000,
         summarization_strategy: str = "key_points",
         enable_memory: bool = True
     ):
         """
-        Initialize a new agent with specific characteristics.
+        Initialize a new agent with chuk-tool-processor as the native tool engine.
         
         Args:
             name: Unique identifier for this agent
@@ -51,6 +62,12 @@ class ChukAgent:
             model: Specific model to use (if None, uses provider default)
             streaming: Whether to stream responses or return complete responses
             config: Optional provider configuration
+            mcp_config_file: Path to MCP server configuration file
+            mcp_servers: List of MCP server names to initialize
+            tool_namespace: Namespace for tools in the registry
+            max_concurrency: Maximum concurrent tool executions
+            tool_timeout: Timeout for tool execution in seconds
+            enable_tools: Whether to enable tool calling functionality
             token_threshold: Maximum tokens before session segmentation
             summarization_strategy: Strategy for summarizing sessions
             enable_memory: Whether to enable conversation memory
@@ -58,227 +75,322 @@ class ChukAgent:
         self.name = name
         self.description = description
         
-        # Define a memory-focused instruction if none is provided
-        default_instruction = f"""
-You are a helpful culinary assistant specialized in suggesting recipes and providing cooking advice.
-
-CRITICAL IDENTITY GUIDANCE:
-1. If the user says "my name is X" or introduces themselves, ALWAYS acknowledge their name in your next response.
-2. If the user asks "what's my name?", check your conversation memory and tell them what name they told you.
-3. Address the user by name whenever possible in your responses.
-4. Remember personal preferences they share.
-
-Your primary goal is to help with cooking advice while creating a personalized experience.
-"""
+        # Define a default instruction if none is provided
+        default_instruction = f"You are a helpful assistant named {name}. {description}"
         
-        # Enhance instruction with memory guidance if memory is enabled
-        if enable_memory:
-            if instruction:
-                memory_instruction = """
-IMPORTANT: You must remember personal information shared by the user.
-When the user says their name, remember it and use it in future responses.
-If they ever ask "what's my name?", tell them their name based on what they've told you earlier.
-Similarly, remember and refer to other personal details they share like preferences, locations, etc.
-
-This is critical for providing a personalized experience.
-"""
-                self.instruction = f"{instruction}\n\n{memory_instruction}"
-            else:
-                self.instruction = default_instruction
-        else:
-            self.instruction = instruction or default_instruction
-        
+        self.instruction = instruction or default_instruction
         self.provider = provider
         self.model = model
         self.streaming = streaming
         self.config = config or ProviderConfig()
+        
+        # Tool processor configuration
+        self.enable_tools = enable_tools
+        self.mcp_config_file = mcp_config_file
+        self.mcp_servers = mcp_servers or []
+        self.tool_namespace = tool_namespace
+        self.max_concurrency = max_concurrency
+        self.tool_timeout = tool_timeout
+        
+        # Session management (simplified)
         self.token_threshold = token_threshold
         self.summarization_strategy = summarization_strategy
         self.enable_memory = enable_memory
         
-        # Session tracking
-        self.session_map = {}  # Map a2a session IDs to chuk-session-manager session IDs
-        self.session_failures = 0  # Track session failures for graceful degradation
-        self.max_session_failures = 5  # Max failures before disabling session management
+        # Tool processor components (native tool engine)
+        self.registry = None
+        self.executor = None
+        self.stream_manager = None
+        self.tools = []  # OpenAI-compatible tool schemas
         
-        # Cache for user names
-        self.user_names = {}  # Map session IDs to user names
+        # Map: safe_name -> real dotted name
+        self._name_map: dict[str, str] = {}
         
-        # Import session manager components here to avoid loading them if not used
+        self._tools_initialized = False
+        
+        logger.info(f"Initialized ChukAgent '{name}' using {provider}/{model or 'default'}")
+        if self.enable_tools:
+            logger.info(f"Tool calling enabled with {len(self.mcp_servers)} MCP servers")
+    
+    async def _initialize_tools(self) -> None:
+        """Initialize the native chuk-tool-processor engine."""
+        if self._tools_initialized or not self.enable_tools:
+            return
+
         try:
-            from chuk_session_manager.storage import SessionStoreProvider, InMemorySessionStore
-            from chuk_session_manager.infinite_conversation import (
-                InfiniteConversationManager, SummarizationStrategy
-            )
-            
-            # Ensure we have a session store
-            if not SessionStoreProvider.get_store():
-                SessionStoreProvider.set_store(InMemorySessionStore())
-            
-            # Map string strategy to enum
-            strategy_map = {
-                "basic": SummarizationStrategy.BASIC,
-                "key_points": SummarizationStrategy.KEY_POINTS,
-                "query_focused": SummarizationStrategy.QUERY_FOCUSED,
-                "topic_based": SummarizationStrategy.TOPIC_BASED
-            }
-            
-            # Create the conversation manager
-            self.conversation_manager = InfiniteConversationManager(
-                token_threshold=token_threshold,
-                summarization_strategy=strategy_map.get(
-                    summarization_strategy.lower(), 
-                    SummarizationStrategy.KEY_POINTS
+            if self.mcp_servers and self.mcp_config_file:
+                logger.info(f"Raw self.mcp_servers: {self.mcp_servers}")
+
+                if not isinstance(self.mcp_servers, list):
+                    raise ValueError("Expected self.mcp_servers to be a list")
+
+                # ✅ Correct dict format
+                server_names = {i: name for i, name in enumerate(self.mcp_servers)}
+                logger.info(f"Constructed server_names: {server_names}")
+                assert isinstance(server_names, dict), "server_names must be a dict[int, str]"
+
+                # ✅ THIS LINE IS CRITICAL - Ensure namespace is never None
+                namespace = self.tool_namespace if self.tool_namespace else "default"
+                _, self.stream_manager = await setup_mcp_stdio(
+                    config_file=self.mcp_config_file,
+                    servers=self.mcp_servers,
+                    server_names=server_names,  # ← not self.mcp_servers!
+                    namespace=namespace
                 )
+
+                logger.info(f"Initialized {len(self.mcp_servers)} MCP servers")
+
+            self.registry = await ToolRegistryProvider.get_registry()
+
+            strategy = InProcessStrategy(
+                self.registry,
+                default_timeout=self.tool_timeout,
+                max_concurrency=self.max_concurrency
             )
-            
-            self.session_manager_available = True
-            logger.info(f"Initialized agent '{name}' with session manager support")
-            
-        except ImportError:
-            logger.warning(f"chuk_session_manager not available - falling back to basic session handling")
-            self.conversation_manager = None
-            self.session_manager_available = False
-            
-        logger.info(f"Initialized agent '{name}' using {provider}/{model or 'default'}")
-    
-    async def _create_llm_summary(self, messages: List[Dict[str, Any]]) -> str:
-        """
-        Generate a summary of the conversation using the LLM.
-        
-        Args:
-            messages: The conversation history to summarize
-            
-        Returns:
-            A summary of the conversation
-        """
-        # Initialize LLM client
-        client = get_llm_client(
-            provider=self.provider,
-            model=self.model,
-            config=self.config
-        )
-        
-        # Create a system prompt for summarization
-        system_prompt = f"""
-        Create a concise summary of the conversation below.
-        Focus on key points and main topics of the discussion.
-        Be sure to include any personal details the user has shared, such as their name, preferences, etc.
-        Format your response as a brief paragraph.
-        """
-        
-        # Prepare messages for the LLM
-        summary_messages = [
-            {"role": "system", "content": system_prompt},
-        ]
-        
-        # Add relevant conversation messages
-        for msg in messages:
-            if msg["role"] != "system":
-                summary_messages.append(msg)
-        
-        # Get the summary from the LLM
-        try:
-            response = await client.create_completion(
-                messages=summary_messages,
-                stream=False
-            )
-            summary = response.get("response", "No summary generated")
-            return summary
+            self.executor = ToolExecutor(self.registry, strategy=strategy)
+
+            await self._generate_tool_schemas()
+
+            self._tools_initialized = True
+            logger.info(f"Native tool engine initialized with {len(self.tools)} tools")
+
         except Exception as e:
-            logger.error(f"Error generating summary: {e}")
-            return "Error generating summary"
-    
-    async def _get_or_create_session(self, a2a_session_id: str) -> str:
+            logger.error(f"Failed to initialize native tool engine: {e}")
+            self.enable_tools = False
+
+    async def _generate_tool_schemas(self) -> None:
         """
-        Get or create a session ID for the chuk-session-manager.
-        
-        Args:
-            a2a_session_id: The session ID from a2a server
-            
-        Returns:
-            A session ID for the chuk-session-manager
+        Walk the registry, flatten namespaces, build one OpenAI-style schema
+        *per tool* while creating a safe alias for every dotted name.
         """
-        if not self.session_manager_available or not self.enable_memory:
-            return None
-            
-        try:
-            # Initialize imports
-            from chuk_session_manager.models.session import Session
-            from chuk_session_manager.storage import SessionStoreProvider
-            
-            # Get the session store
-            store = SessionStoreProvider.get_store()
-            
-            # Create a new session if we haven't seen this ID before
-            if a2a_session_id not in self.session_map:
-                new_session = await Session.create()
-                self.session_map[a2a_session_id] = new_session.id
-                logger.info(f"Created new session {new_session.id} for a2a session {a2a_session_id}")
-                return new_session.id
-            
-            # Get the existing session ID from our map
-            chuk_session_id = self.session_map[a2a_session_id]
-            
-            # Retrieve the session from the store
-            session = await store.get(chuk_session_id)
-            if session:
-                return chuk_session_id
-            else:
-                # If session not found, create a new one
-                new_session = await Session.create()
-                self.session_map[a2a_session_id] = new_session.id
-                return new_session.id
-                
-        except Exception as e:
-            self.session_failures += 1
-            logger.error(f"Error in _get_or_create_session: {str(e)}")
-            
-            # Disable session management if too many failures
-            if self.session_failures >= self.max_session_failures:
-                logger.warning(f"Too many session failures ({self.session_failures}), disabling session management")
-                self.session_manager_available = False
-                return None
-                
-            # Fallback to creating a new session on error
+        if not self.registry:
+            return
+
+        raw = await self.registry.list_tools()
+        logger.info(f"Raw tools from registry: {raw}")
+
+        # First, get the actual tool schemas from the MCP server
+        mcp_tool_schemas = {}
+        if self.stream_manager:
             try:
-                from chuk_session_manager.models.session import Session
-                new_session = await Session.create()
-                self.session_map[a2a_session_id] = new_session.id
-                return new_session.id
-            except Exception as inner_e:
-                logger.error(f"Failed to create fallback session: {str(inner_e)}")
-                return None
-    
-    def _extract_name_from_message(self, content: str) -> Optional[str]:
-        """
-        Extract a name from a message content if present.
-        
-        Args:
-            content: The message content to parse
-            
-        Returns:
-            The extracted name, or None if not found
-        """
-        if not content:
-            return None
-            
-        # Common patterns for name introduction
-        patterns = [
-            r"(?i)my name is (\w+)",
-            r"(?i)i['']m (\w+)",
-            r"(?i)i am (\w+)",
-            r"(?i)call me (\w+)"
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, content)
-            if match:
-                name = match.group(1)
-                return name
+                # Try to get the tools directly from the stream manager
+                if hasattr(self.stream_manager, 'list_tools'):
+                    # list_tools needs a server name - try with our known server names
+                    for server_name in self.mcp_servers:
+                        try:
+                            mcp_tools = await self.stream_manager.list_tools(server_name)
+                            logger.info(f"MCP tools from server '{server_name}': {mcp_tools}")
+                            for tool in mcp_tools:
+                                if hasattr(tool, 'name'):
+                                    mcp_tool_schemas[tool.name] = {
+                                        'description': getattr(tool, 'description', None),
+                                        'inputSchema': getattr(tool, 'inputSchema', None)
+                                    }
+                                elif isinstance(tool, dict):
+                                    tool_name = tool.get('name')
+                                    if tool_name:
+                                        mcp_tool_schemas[tool_name] = {
+                                            'description': tool.get('description'),
+                                            'inputSchema': tool.get('inputSchema')
+                                        }
+                        except Exception as e:
+                            logger.debug(f"Could not get tools from server '{server_name}': {e}")
                 
-        return None
-    
+                # Alternative: try to access server instances directly
+                elif hasattr(self.stream_manager, '_servers'):
+                    for server_id, server in self.stream_manager._servers.items():
+                        if hasattr(server, 'list_tools'):
+                            try:
+                                tools_response = await server.list_tools()
+                                if hasattr(tools_response, 'tools'):
+                                    for tool in tools_response.tools:
+                                        mcp_tool_schemas[tool.name] = {
+                                            'description': tool.description,
+                                            'inputSchema': tool.inputSchema
+                                        }
+                                logger.info(f"Got {len(mcp_tool_schemas)} tool schemas from MCP server")
+                            except Exception as e:
+                                logger.debug(f"Could not get tools from server {server_id}: {e}")
+                
+                logger.info(f"Extracted MCP tool schemas: {mcp_tool_schemas}")
+            except Exception as e:
+                logger.warning(f"Could not extract MCP tool schemas: {e}")
+
+        # -------- helper to flatten nested dict / list output ---------------
+        def walk(node, prefix=""):
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    full = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
+                    # nested namespace?
+                    if getattr(v, "is_namespace", False) or isinstance(v, dict):
+                        yield from walk(v, full + ".")
+                    else:
+                        yield full, v
+            elif isinstance(node, (list, tuple)):
+                # Handle tuple format like (namespace, tool_name) or list of such tuples
+                for item in node:
+                    if isinstance(item, tuple) and len(item) == 2:
+                        namespace, tool_name = item
+                        # Create full name: namespace.tool_name or just tool_name if namespace is None
+                        if namespace and namespace != "None":
+                            full_name = f"{namespace}.{tool_name}"
+                        else:
+                            full_name = tool_name
+                        # Accept tools from our specific namespace or default namespace
+                        if namespace == self.tool_namespace or namespace == "default" or namespace is None:
+                            yield full_name, tool_name  # yield (full_name, tool_info)
+                    else:
+                        # Fallback for other formats
+                        yield prefix + item.name if prefix else item.name, item
+
+        # --------------------------------------------------------------------
+        self.tools = []
+        self._name_map = {}
+        seen_tools = set()  # Track seen tools to avoid duplicates
+
+        for real_name, tool_name in walk(raw):
+            # Skip duplicates
+            if real_name in seen_tools:
+                continue
+            seen_tools.add(real_name)
+            
+            # Get the actual tool metadata from the registry
+            try:
+                tool_metadata = await self.registry.get_tool(real_name)
+                logger.info(f"Retrieved tool metadata for '{real_name}': {tool_metadata}")
+                
+                # Try multiple ways to extract the description and input schema
+                desc = None
+                params = None
+                
+                # First, check if we have MCP schemas for this tool
+                if hasattr(tool_metadata, 'tool_name') and tool_metadata.tool_name in mcp_tool_schemas:
+                    schema = mcp_tool_schemas[tool_metadata.tool_name]
+                    desc = schema.get('description')
+                    params = schema.get('inputSchema')
+                    logger.info(f"Found MCP schema for {tool_metadata.tool_name}: desc={desc}, params={params}")
+                
+                # Fallback: try to extract from tool metadata attributes
+                if not desc:
+                    for attr in ['description', 'desc', '_description']:
+                        if hasattr(tool_metadata, attr):
+                            desc = getattr(tool_metadata, attr)
+                            if desc:
+                                break
+                
+                if not params:
+                    for attr in ['inputSchema', 'input_schema', 'schema', '_input_schema', 'parameters']:
+                        if hasattr(tool_metadata, attr):
+                            params = getattr(tool_metadata, attr)
+                            if params and params != {'type': 'object', 'properties': {}, 'required': []}:
+                                break
+                
+                # Log what we found
+                logger.info(f"Extracted - desc: {desc}, params: {params}")
+                
+                # Fallback to defaults if still empty
+                desc = desc or f"Execute {real_name}"
+                params = params or {"type": "object", "properties": {}, "required": []}
+                
+            except Exception as e:
+                logger.warning(f"Could not get tool metadata for '{real_name}': {e}")
+                desc = f"Execute {real_name}"
+                params = {"type": "object", "properties": {}, "required": []}
+            
+            # turn "tools.get_current_time" → "tools__get_current_time"
+            safe = re.sub(r"[^0-9a-zA-Z_]", "_", real_name)[:64]
+            # ensure uniqueness
+            if safe in self._name_map and self._name_map[safe] != real_name:
+                safe = f"{safe}_{abs(hash(real_name)) & 0xFFFF:x}"
+            self._name_map[safe] = real_name
+            
+            # Debug: Log the tool information to see what we're getting
+            logger.info(f"Tool '{real_name}': desc='{desc}', params={params}")
+
+            self.tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": safe,            # <- OpenAI-safe alias
+                        "description": desc,
+                        "parameters": params,
+                    },
+                }
+            )
+
+        logger.info("Generated %d tool schemas (alias → real): %s",
+                    len(self.tools), self._name_map)
+
+    async def _execute_tools_natively(
+        self, tool_calls: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """
+        Translate the OpenAI-safe alias back to the real dotted name and run
+        the calls through chuk-tool-processor.
+        """
+        if not self.executor:
+            await self._initialize_tools()
+        if not self.executor:
+            return [
+                {
+                    "tool_call_id": tc.get("id"),
+                    "role": "tool",
+                    "name": tc.get("function", {}).get("name"),
+                    "content": "Tool engine not initialised",
+                }
+                for tc in tool_calls
+            ]
+
+        native_calls = []
+        for tc in tool_calls:
+            func = tc.get("function", {})
+            alias = func.get("name")
+            real = self._name_map.get(alias, alias)          # fall back to alias
+            
+            logger.info(f"Tool call: alias='{alias}' -> real='{real}'")
+            logger.info(f"Available name mappings: {self._name_map}")
+            
+            args = func.get("arguments") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {"input": args}
+            native_calls.append(ToolCall(tool=real, arguments=args))
+
+        try:
+            results = await self.executor.execute(native_calls)
+            logger.info(f"Tool execution results: {[{'result': r.result, 'error': r.error} for r in results]}")
+        except Exception as exc:
+            logger.exception("Native tool execution failed")
+            return [
+                {
+                    "tool_call_id": tc.get("id"),
+                    "role": "tool",
+                    "name": tc.get("function", {}).get("name"),
+                    "content": f"Native execution error: {exc}",
+                }
+                for tc in tool_calls
+            ]
+
+        formatted = []
+        for tc, res in zip(tool_calls, results):
+            content = (
+                json.dumps(res.result, indent=2)
+                if res.error is None
+                else f"Error: {res.error}"
+            )
+            formatted.append(
+                {
+                    "tool_call_id": tc.get("id"),
+                    "role": "tool",
+                    "name": tc.get("function", {}).get("name"),
+                    "content": content,
+                }
+            )
+            logger.info(f"Formatted tool result: {formatted[-1]}")
+        return formatted
+
     def _extract_message_content(self, message: Message) -> Union[str, List[Dict[str, Any]]]:
         """
         Extract content from message parts, handling both text and multimodal inputs.
@@ -393,7 +505,7 @@ This is critical for providing a personalized experience.
                 return "Empty multimodal message"
                 
         return content_parts
-    
+
     async def process_message(
         self, 
         task_id: str, 
@@ -461,164 +573,56 @@ This is critical for providing a personalized experience.
             if not user_content_str or user_content_str.strip() == "":
                 user_content_str = f"Message from user at {task_id[-8:]}"
         
-        # Check for name information in the message
-        user_name = self._extract_name_from_message(user_content_str)
-        if user_name and session_id:
-            self.user_names[session_id] = user_name
-        
-        # Check if this is a "what's my name" question
-        is_name_question = False
-        if isinstance(user_content_str, str):
-            user_content_lower = user_content_str.lower()
-            if "what's my name" in user_content_lower or "what is my name" in user_content_lower:
-                is_name_question = True
-        
-        # Initialize LLM client
-        client = get_llm_client(
-            provider=self.provider,
-            model=self.model,
-            config=self.config
-        )
+        # Format messages for the LLM
+        llm_messages = [
+            {"role": "system", "content": self.instruction},
+            {"role": "user", "content": user_content_str}
+        ]
         
         # Track response state
         started_generating = False
         full_response = ""
-        chuk_session_id = None
         
         try:
-            # Format messages for the LLM
-            llm_messages = [{"role": "system", "content": self.instruction}]
+            # Use generate_response which handles tool calling
+            # Don't await it - it might return an async generator
+            response_generator = self.generate_response(llm_messages)
             
-            # Use the session manager if available
-            if self.session_manager_available and session_id and self.enable_memory:
-                try:
-                    # Get or create a session
-                    chuk_session_id = await self._get_or_create_session(session_id)
-                    
-                    if chuk_session_id:
-                        from chuk_session_manager.models.event_source import EventSource
-                        from chuk_session_manager.models.event_type import EventType
-                        from chuk_session_manager.models.session import SessionEvent
-                        from chuk_session_manager.storage import SessionStoreProvider
-                        
-                        # Get the session store and session
-                        store = SessionStoreProvider.get_store()
-                        session = await store.get(chuk_session_id)
-                        
-                        if session:
-                            # Add the user message to the session
-                            await session.add_event_and_save(
-                                SessionEvent(
-                                    message=user_content_str,
-                                    source=EventSource.USER,
-                                    type=EventType.MESSAGE
-                                )
-                            )
-                            
-                            # Build context from the session
-                            try:
-                                context = await self.conversation_manager.build_context_for_llm(chuk_session_id)
-                                
-                                # Ensure system instruction is at the beginning
-                                if not context or context[0].get("role") != "system":
-                                    context.insert(0, {"role": "system", "content": self.instruction})
-                                
-                                # Add special handling for "what's my name" questions
-                                if is_name_question:
-                                    stored_name = self.user_names.get(session_id)
-                                    if stored_name:
-                                        # Insert a special reminder about the name
-                                        context.insert(1, {
-                                            "role": "system", 
-                                            "content": f"The user's name is {stored_name}. They are asking about their name, so make sure to tell them their name is {stored_name}."
-                                        })
-                                
-                                # If we know the user's name, add it to the context
-                                elif user_name or self.user_names.get(session_id):
-                                    name_to_use = user_name or self.user_names.get(session_id)
-                                    # Insert a reminder about the user's name
-                                    context.insert(1, {
-                                        "role": "system",
-                                        "content": f"The user's name is {name_to_use}. Remember to use their name in your response."
-                                    })
-                                
-                                llm_messages = context
-                            except Exception as ctx_err:
-                                logger.error(f"Error building context: {ctx_err}")
-                                # Fallback to basic context
-                                llm_messages = [
-                                    {"role": "system", "content": self.instruction},
-                                    {"role": "user", "content": user_content_str}
-                                ]
-                        else:
-                            llm_messages.append({"role": "user", "content": user_content_str})
-                    else:
-                        llm_messages.append({"role": "user", "content": user_content_str})
-                except Exception as e:
-                    # If there's an error with the session manager, fall back to basic mode
-                    self.session_failures += 1
-                    logger.error(f"Error using session manager: {e}")
-                    
-                    # Disable session management if too many failures
-                    if self.session_failures >= self.max_session_failures:
-                        logger.warning(f"Too many session failures ({self.session_failures}), disabling session management")
-                        self.session_manager_available = False
-                        
-                    llm_messages.append({"role": "user", "content": user_content_str})
-            else:
-                # Basic formatting without session manager
-                llm_messages.append({"role": "user", "content": user_content_str})
+            # If it's a coroutine, await it first
+            if hasattr(response_generator, '__await__'):
+                response_generator = await response_generator
             
-            if self.streaming:
-                # Streaming mode - create_completion returns an async generator, DON'T await it
-                stream = client.create_completion(
-                    messages=llm_messages,
-                    stream=True
-                )
-                
-                # Process streaming response - iterate over the async generator
-                async for chunk in stream:
-                    # Extract delta text
+            # Check if it's an async generator (streaming) or a direct response (tools)
+            if hasattr(response_generator, "__aiter__"):
+                # Streaming case
+                async for chunk in response_generator:
                     delta = chunk.get("response", "")
-                    
-                    # Handle text response
                     if delta:
                         full_response += delta
                         
-                        # Create/update response artifact
-                        if not started_generating:
-                            started_generating = True
-                            artifact = Artifact(
-                                name=f"{self.name}_response",
-                                parts=[TextPart(type="text", text=delta)],
-                                index=0
-                            )
-                        else:
-                            artifact = Artifact(
-                                name=f"{self.name}_response",
-                                parts=[TextPart(type="text", text=full_response)],
-                                index=0
-                            )
-                        
-                        yield TaskArtifactUpdateEvent(
-                            id=task_id,
-                            artifact=artifact
+                        artifact = Artifact(
+                            name=f"{self.name}_response",
+                            parts=[TextPart(type="text", text=delta if not started_generating else full_response)],
+                            index=0
                         )
                         
-                        # Small delay to avoid overwhelming the client
+                        started_generating = True
+                        yield TaskArtifactUpdateEvent(id=task_id, artifact=artifact)
                         await asyncio.sleep(0.01)
             else:
-                # Non-streaming mode - create_completion returns a coroutine, DO await it
-                response = await client.create_completion(
-                    messages=llm_messages,
-                    stream=False
-                )
-                
-                # Extract text response
-                text_response = response.get("response", "")
+                # Non-streaming response (e.g. from tool calls)
+                if isinstance(response_generator, dict):
+                    text_response = response_generator.get("response", "")
+                    if not text_response:
+                        if "tool_calls" in response_generator:
+                            text_response = "Tool executed but returned no direct response."
+                        else:
+                            text_response = str(response_generator)
+                else:
+                    text_response = str(response_generator)
+
                 full_response = text_response
-                
-                # Create response artifact
+
                 yield TaskArtifactUpdateEvent(
                     id=task_id,
                     artifact=Artifact(
@@ -628,39 +632,6 @@ This is critical for providing a personalized experience.
                     )
                 )
             
-            # Add assistant response to session history if using session manager
-            if self.session_manager_available and session_id and chuk_session_id and full_response and self.enable_memory:
-                try:
-                    from chuk_session_manager.models.event_source import EventSource
-                    from chuk_session_manager.models.event_type import EventType
-                    from chuk_session_manager.models.session import SessionEvent
-                    from chuk_session_manager.storage import SessionStoreProvider
-                    
-                    # Get the store and then the session
-                    store = SessionStoreProvider.get_store()
-                    session = await store.get(chuk_session_id)
-                    
-                    if session:
-                        # Add the assistant response
-                        await session.add_event_and_save(
-                            SessionEvent(
-                                message=full_response,
-                                source=EventSource.LLM,
-                                type=EventType.MESSAGE
-                            )
-                        )
-                        logger.info(f"Successfully added assistant response to session {chuk_session_id}")
-                    else:
-                        logger.warning(f"Session {chuk_session_id} not found for updating response")
-                except Exception as e:
-                    self.session_failures += 1
-                    logger.error(f"Error updating session with assistant response: {str(e)}")
-                    
-                    # Disable session management if too many failures
-                    if self.session_failures >= self.max_session_failures:
-                        logger.warning(f"Too many session failures ({self.session_failures}), disabling session management")
-                        self.session_manager_available = False
-            
             # Complete the task
             yield TaskStatusUpdateEvent(
                 id=task_id,
@@ -669,16 +640,12 @@ This is critical for providing a personalized experience.
             )
             
         except Exception as e:
-            logger.error(f"Error in agent '{self.name}': {e}")
-            
-            # Yield error status
+            logger.error(f"Error processing message: {e}")
             yield TaskStatusUpdateEvent(
                 id=task_id,
                 status=TaskStatus(state=TaskState.failed),
                 final=True
             )
-            
-            # Add error as artifact
             yield TaskArtifactUpdateEvent(
                 id=task_id,
                 artifact=Artifact(
@@ -687,95 +654,243 @@ This is critical for providing a personalized experience.
                     index=0
                 )
             )
-            
-    async def get_conversation_history(self, session_id: Optional[str] = None) -> List[Dict[str, str]]:
+
+    async def generate_response(
+        self, 
+        messages: List[Dict[str, Any]]
+    ) -> Union[AsyncGenerator[Dict[str, str], None], Dict[str, str]]:
         """
-        Get the conversation history for a session.
+        Generate a response using the LLM with native tool calling.
+
+        Args:
+            messages: The conversation history in ChatML format
+
+        Returns:
+            Either an async generator of response chunks (if streaming and no tools)
+            or a complete response (if tools used)
+        """
+        # Initialize LLM client
+        client = get_llm_client(
+            provider=self.provider,
+            model=self.model,
+            config=self.config
+        )
+
+        # Ensure the system message is at the beginning
+        if not messages or messages[0].get("role") != "system":
+            messages.insert(0, {"role": "system", "content": self.instruction})
+
+        # Initialize tools if not already done
+        if self.enable_tools and not self._tools_initialized:
+            await self._initialize_tools()
+
+        has_tools = self.enable_tools and len(self.tools) > 0
+
+        try:
+            if has_tools:
+                # Tool calls not supported in streaming mode (yet), always use non-streaming
+                return await self._generate_with_native_tools(client, messages)
+            else:
+                # No tools - return the async generator directly (don't await it)
+                return client.create_completion(
+                    messages=messages,
+                    stream=self.streaming
+                )
+        except Exception as e:
+            logger.error(f"Error generating response: {e}")
+            raise
+
+    async def _generate_with_native_tools(self, client, messages):
+        # 1️⃣ call the model → gets tool_calls
+        response = await client.create_completion(
+            messages=messages,
+            stream=False,
+            tools=self.tools,
+        )
+
+        tool_calls = response.get("tool_calls", [])
+        if not tool_calls:
+            return response                         # nothing to do
+
+        logger.info(f"LLM requested {len(tool_calls)} tool calls: {[tc.get('function', {}).get('name') for tc in tool_calls]}")
+
+        # 2️⃣ execute tools
+        tool_results = await self._execute_tools_natively(tool_calls)
+        
+        # Log the tool results for debugging
+        for i, result in enumerate(tool_results):
+            logger.info(f"Tool result {i}: {result}")
+
+        # 3️⃣ ask the model to wrap-up
+        messages.extend([
+            {
+                "role": "assistant",
+                "content": response.get("response", ""),
+                "tool_calls": tool_calls,
+            },
+            *tool_results,                          # push tool outputs
+        ])
+
+        logger.info(f"Messages before final LLM call: {json.dumps(messages, indent=2)}")
+
+        final_response = await client.create_completion(
+            messages=messages,
+            stream=False,
+        )
+
+        logger.info(f"Final LLM response: {final_response}")
+
+        # ── NEW ───────────────────────────────────────────────────────────
+        # If the wrap-up is empty, fall back to the raw tool output(s)
+        if not final_response.get("response"):
+            combined = "\n\n".join(
+                r["content"] for r in tool_results if r.get("content")
+            ) or "Tool executed but returned no text."
+            final_response["response"] = combined
+            logger.info(f"Used fallback response: {final_response['response']}")
+        # ──────────────────────────────────────────────────────────────────
+
+        return final_response
+
+    async def generate_summary(self, messages: List[Dict[str, Any]]) -> str:
+        """
+        Generate a summary of the conversation using the LLM.
         
         Args:
-            session_id: The session ID to get history for
+            messages: The conversation history to summarize
             
         Returns:
-            A list of message dictionaries
+            A summary of the conversation
         """
-        if not self.session_manager_available or not session_id or not self.enable_memory:
-            return []
+        # Initialize LLM client
+        client = get_llm_client(
+            provider=self.provider,
+            model=self.model,
+            config=self.config
+        )
         
+        # Create a system prompt for summarization
+        system_prompt = """
+        Create a concise summary of the conversation below.
+        Focus on key points and main topics of the discussion.
+        Format your response as a brief paragraph.
+        """
+        
+        # Prepare messages for the LLM
+        summary_messages = [
+            {"role": "system", "content": system_prompt},
+        ]
+        
+        # Add relevant conversation messages
+        for msg in messages:
+            if msg["role"] != "system":
+                summary_messages.append(msg)
+        
+        # Get the summary from the LLM
         try:
-            # Get the chuk-session-manager session ID
-            chuk_session_id = self.session_map.get(session_id)
-            if not chuk_session_id:
-                return []
-                
-            # Get the full conversation history
-            history = await self.conversation_manager.get_full_conversation_history(chuk_session_id)
-            
-            # Convert to ChatML format
-            formatted_history = []
-            for role, source, content in history:
-                formatted_history.append({
-                    "role": role,
-                    "content": content
-                })
-            
-            return formatted_history
+            response = await client.create_completion(
+                messages=summary_messages,
+                stream=False
+            )
+            summary = response.get("response", "No summary generated")
+            return summary
         except Exception as e:
-            logger.error(f"Error getting conversation history: {e}")
-            return []
+            logger.error(f"Error generating summary: {e}")
+            return "Error generating summary"
     
-    async def get_token_usage(self, session_id: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Get token usage statistics for a session.
+    async def cleanup(self) -> None:
+        """Clean up native tool engine resources."""
+        if self.stream_manager:
+            await self.stream_manager.close()
+            self.stream_manager = None
         
-        Args:
-            session_id: The session ID to get usage for
-            
-        Returns:
-            A dictionary with usage statistics
-        """
-        if not self.session_manager_available or not session_id or not self.enable_memory:
-            return {"total_tokens": 0, "total_cost": 0}
+        self._tools_initialized = False
+        logger.info("Cleaned up native tool engine resources")
+    
+    async def __aenter__(self):
+        """Async context manager entry."""
+        if self.enable_tools:
+            await self._initialize_tools()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        await self.cleanup()
+
+# Factory functions for common agent configurations
+def create_agent_with_mcp(
+    name: str,
+    description: str = "",
+    instruction: str = "",
+    mcp_servers: List[str] = None,
+    mcp_config_file: str = None,
+    tool_namespace: str = None,  # Allow None to auto-generate
+    provider: str = "openai",
+    model: str = "gpt-4o-mini",
+    **kwargs
+) -> ChukAgent:
+    """
+    Create a ChukAgent with MCP tools using the native tool engine.
+    
+    Args:
+        name: Agent name
+        description: Agent description
+        instruction: Agent instructions
+        mcp_servers: List of MCP server names
+        mcp_config_file: Path to MCP configuration file
+        tool_namespace: Namespace for tools in the registry (auto-generated if None)
+        provider: LLM provider
+        model: LLM model
+        **kwargs: Additional ChukAgent arguments
         
-        try:
-            # Get the chuk-session-manager session ID
-            chuk_session_id = self.session_map.get(session_id)
-            if not chuk_session_id:
-                return {"total_tokens": 0, "total_cost": 0}
-            
-            # Use the session store to get the session
-            from chuk_session_manager.storage import SessionStoreProvider
-            store = SessionStoreProvider.get_store()
-            session = await store.get(chuk_session_id)
-                
-            if not session:
-                return {"total_tokens": 0, "total_cost": 0}
-            
-            # Get usage statistics
-            usage = {
-                "total_tokens": session.total_tokens,
-                "total_cost": session.total_cost,
-                "by_model": {}
-            }
-            
-            # Add model-specific usage
-            for model, model_usage in session.token_summary.usage_by_model.items():
-                usage["by_model"][model] = {
-                    "prompt_tokens": model_usage.prompt_tokens,
-                    "completion_tokens": model_usage.completion_tokens,
-                    "total_tokens": model_usage.total_tokens,
-                    "cost": model_usage.estimated_cost_usd
-                }
-            
-            # Add source-specific usage
-            source_usage = await session.get_token_usage_by_source()
-            usage["by_source"] = {}
-            for source, summary in source_usage.items():
-                usage["by_source"][source] = {
-                    "total_tokens": summary.total_tokens,
-                    "cost": summary.total_estimated_cost_usd
-                }
-            
-            return usage
-        except Exception as e:
-            logger.error(f"Error getting token usage: {e}")
-            return {"total_tokens": 0, "total_cost": 0}
+    Returns:
+        Configured ChukAgent with native tool calling
+    """
+    # Auto-generate unique namespace if not provided
+    if tool_namespace is None:
+        tool_namespace = f"{name}_tools"
+    
+    return ChukAgent(
+        name=name,
+        description=description,
+        instruction=instruction,
+        provider=provider,
+        model=model,
+        mcp_servers=mcp_servers,
+        mcp_config_file=mcp_config_file,
+        tool_namespace=tool_namespace,
+        enable_tools=True,
+        **kwargs
+    )
+
+def create_simple_agent(
+    name: str,
+    description: str = "",
+    instruction: str = "",
+    provider: str = "openai",
+    model: str = "gpt-4o-mini",
+    **kwargs
+) -> ChukAgent:
+    """
+    Create a simple ChukAgent without tools.
+    
+    Args:
+        name: Agent name
+        description: Agent description  
+        instruction: Agent instructions
+        provider: LLM provider
+        model: LLM model
+        **kwargs: Additional ChukAgent arguments
+        
+    Returns:
+        Simple ChukAgent without tool calling
+    """
+    return ChukAgent(
+        name=name,
+        description=description,
+        instruction=instruction,
+        provider=provider,
+        model=model,
+        enable_tools=False,
+        **kwargs
+    )

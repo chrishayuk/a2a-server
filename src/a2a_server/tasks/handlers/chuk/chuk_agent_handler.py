@@ -9,7 +9,8 @@ from typing import AsyncGenerator, Optional, List, Dict, Any
 # a2a imports
 from a2a_server.tasks.task_handler import TaskHandler
 from a2a_json_rpc.spec import (
-    Message, TaskStatus, TaskState, TaskStatusUpdateEvent
+    Message, TaskStatus, TaskState, TaskStatusUpdateEvent, 
+    TaskArtifactUpdateEvent, Artifact, TextPart
 )
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ class AgentHandler(TaskHandler):
                     logger.info(f"Loaded agent from {agent}")
                 except (ImportError, AttributeError) as e:
                     logger.error(f"Failed to load agent from {agent}: {e}")
+                    # Don't set self.agent to None here - it's already None
     
     @property
     def name(self) -> str:
@@ -81,10 +83,20 @@ class AgentHandler(TaskHandler):
         """
         if self.agent is None:
             logger.error("No agent configured")
+            # Fixed: Remove the message parameter since it's not allowed
             yield TaskStatusUpdateEvent(
                 id=task_id,
-                status=TaskStatus(state=TaskState.failed, message="No agent configured"),
+                status=TaskStatus(state=TaskState.failed),
                 final=True
+            )
+            # Add an artifact with the error details instead
+            yield TaskArtifactUpdateEvent(
+                id=task_id,
+                artifact=Artifact(
+                    name="error",
+                    parts=[TextPart(type="text", text="No agent configured")],
+                    index=0
+                )
             )
             return
             
@@ -94,10 +106,20 @@ class AgentHandler(TaskHandler):
                 yield event
         except Exception as e:
             logger.error(f"Error in agent processing: {e}")
+            # Fixed: Remove the message parameter since it's not allowed
             yield TaskStatusUpdateEvent(
                 id=task_id,
-                status=TaskStatus(state=TaskState.failed, message=f"Agent error: {str(e)}"),
+                status=TaskStatus(state=TaskState.failed),
                 final=True
+            )
+            # Add an artifact with the error details instead
+            yield TaskArtifactUpdateEvent(
+                id=task_id,
+                artifact=Artifact(
+                    name="error",
+                    parts=[TextPart(type="text", text=f"Agent error: {str(e)}")],
+                    index=0
+                )
             )
     
     async def cancel_task(self, task_id: str) -> bool:

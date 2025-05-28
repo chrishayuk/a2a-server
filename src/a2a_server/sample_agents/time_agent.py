@@ -51,7 +51,7 @@ Always be precise with time information and explain any calculations you perform
 """,
     mcp_servers=["time"],
     mcp_config_file=config_file,
-    tool_namespace="tools",  # Use a proper namespace string instead of empty string
+    tool_namespace="time",  # Use a proper namespace string instead of empty string
     provider="openai",
     model="gpt-4o-mini",
     streaming=True

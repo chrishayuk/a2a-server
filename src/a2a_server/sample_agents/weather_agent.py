@@ -51,7 +51,7 @@ Always be helpful and provide detailed weather information with context about wh
 """,
     mcp_servers=["weather"],
     mcp_config_file=config_file,
-    tool_namespace="tools",
+    tool_namespace="weather",
     provider="openai",
     model="gpt-4o-mini",
     streaming=True

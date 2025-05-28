@@ -38,6 +38,39 @@ handlers:
             - recipes
           examples:
             - "What can I make with chicken, mushrooms, and rice?"  
+
+  time_agent:
+    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
+    agent: a2a_server.sample_agents.time_agent.time_agent
+    name: time_agent
+    agent_card:
+      name: Time Agent
+      description: "Gets the current time"
+      #url: "https://a2a-server.fly.dev/chef_agent"
+      version: "0.1.0"
+      documentationUrl: "https://a2a-server.fly.dev/time_agent/docs"
+      provider:
+        organization: "chrishayuk"
+        url: "https://chrishayuk.io"
+      capabilities:
+        streaming: true
+        pushNotifications: false
+      authentication:
+        schemes:
+          - "None"
+      defaultInputModes:
+        - "text/plain"
+      defaultOutputModes:
+        - "text/plain"
+      skills:
+        - id: telling-the-time
+          name: Tells the Time
+          description: "Tells the time"
+          tags:
+            - time
+          examples:
+            - "What is the time?"
+
   pirate_agent:
     type: a2a_server.tasks.handlers.adk.google_adk_handler.GoogleADKHandler
     agent: a2a_server.sample_agents.pirate_agent.pirate_agent
