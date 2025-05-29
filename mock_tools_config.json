@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "mock_image_tools": {
+      "command": "python",
+      "args": [
+        "-u",
+        "mock_image_tools_server.py"
+      ],
+      "cwd": "."
+    }
+  }
+}

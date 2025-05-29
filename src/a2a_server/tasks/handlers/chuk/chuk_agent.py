@@ -1,3 +1,4 @@
+# a2a_server/tasks/handlers/chuk/chuk_agent.py
 """
 ChukAgent: A pure agent abstraction with chuk-tool-processor as the native tool calling engine
 """
@@ -513,16 +514,11 @@ class ChukAgent:
         session_id: Optional[str] = None
     ) -> AsyncGenerator:
         """
-        Process a message and generate responses.
-        
-        Args:
-            task_id: Unique identifier for the task
-            message: Message to process
-            session_id: Optional session identifier for maintaining conversation context
-        
-        Yields:
-            Task status and artifact updates
+        Process a message and generate responses - FIXED to emit tool artifacts.
         """
+        # Clear any previous tool responses
+        self._tool_responses = []
+        
         # First yield a "working" status
         yield TaskStatusUpdateEvent(
             id=task_id,
@@ -632,6 +628,19 @@ class ChukAgent:
                     )
                 )
             
+            # NEW: Emit tool response artifacts if any tools were called
+            if hasattr(self, '_tool_responses') and self._tool_responses:
+                logger.info(f"Emitting {len(self._tool_responses)} tool response artifacts")
+                for i, tool_response in enumerate(self._tool_responses):
+                    yield TaskArtifactUpdateEvent(
+                        id=task_id,
+                        artifact=Artifact(
+                            name=f"{self.name}_tool_response_{i}",
+                            parts=[TextPart(type="text", text=tool_response)],
+                            index=i + 1
+                        )
+                    )
+            
             # Complete the task
             yield TaskStatusUpdateEvent(
                 id=task_id,
@@ -654,7 +663,7 @@ class ChukAgent:
                     index=0
                 )
             )
-
+            
     async def generate_response(
         self, 
         messages: List[Dict[str, Any]]
@@ -720,6 +729,11 @@ class ChukAgent:
         # Log the tool results for debugging
         for i, result in enumerate(tool_results):
             logger.info(f"Tool result {i}: {result}")
+            
+            # NEW: Store tool results for artifact emission
+            if not hasattr(self, '_tool_responses'):
+                self._tool_responses = []
+            self._tool_responses.append(result.get("content", ""))
 
         # 3️⃣ ask the model to wrap-up
         messages.extend([
@@ -752,6 +766,7 @@ class ChukAgent:
 
         return final_response
 
+    
     async def generate_summary(self, messages: List[Dict[str, Any]]) -> str:
         """
         Generate a summary of the conversation using the LLM.

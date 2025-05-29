@@ -1,3 +1,4 @@
+# a2a_server/sample_agents/time_agent.py
 """
 Time Agent - Assistant with time and timezone capabilities via MCP
 """

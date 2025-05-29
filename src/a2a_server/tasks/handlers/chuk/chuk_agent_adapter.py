@@ -1,3 +1,4 @@
+# a2a_server/tasks/handlers/chuk/chuk_agent_adapter.py
 """
 ChukAgentAdapter: Adapts a ChukAgent to the interface expected by A2A handlers.
 """

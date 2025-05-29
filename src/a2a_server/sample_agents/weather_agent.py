@@ -1,3 +1,4 @@
+# a2a_server/sample_agents/weather_agent.py
 """
 Weather Agent - Assistant with weather capabilities via MCP
 """
