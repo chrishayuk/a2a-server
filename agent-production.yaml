@@ -18,6 +18,7 @@ handlers:
     agent_card:
       name: Perplexity Agent
       description: "Uses mock Perplexity tools over SSE to answer questions"
+      url: "https://a2a-server.fly.dev/perplexity_agent"
       version: "0.1.0"
       capabilities: { streaming: true }
       defaultInputModes:  ["text/plain"]
