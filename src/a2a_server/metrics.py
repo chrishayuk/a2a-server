@@ -1,6 +1,6 @@
 # a2a_server/metrics.py
 from __future__ import annotations
-"""Minimal OpenTelemetry metrics helper for A2A-server – now completely quiet
+"""Minimal OpenTelemetry metrics helper for A2A-server - now completely quiet
 on repeated shutdowns (no more "shutdown can only be called once")."""
 
 import atexit
@@ -40,7 +40,7 @@ if _PROM_ENABLED:
         prometheus_client = _pc
         _prom_reader = PrometheusMetricReader()  # auto-registers on global REGISTRY
     except ModuleNotFoundError:
-        _PROM_ENABLED = False  # dependency unavailable – silently disable
+        _PROM_ENABLED = False  # dependency unavailable - silently disable
 
 # ---------------------------------------------------------------------------
 # Globals
@@ -56,7 +56,7 @@ _histogram: Any | None = None
 
 def _init_provider() -> None:
     """Create (or reuse) the global MeterProvider.  Idempotent."""
-    global _provider, _counter, _histogram  # noqa: PLW0603 – module-level singletons
+    global _provider, _counter, _histogram  # noqa: PLW0603 - module-level singletons
 
     if _provider is None:
         current = metrics.get_meter_provider()
@@ -67,7 +67,7 @@ def _init_provider() -> None:
 
     readers: list[Any] = []
 
-    # OTLP push (highest priority – if set we always push)
+    # OTLP push (highest priority - if set we always push)
     if _OTLP_ENDPOINT:
         readers.append(
             PeriodicExportingMetricReader(
@@ -99,7 +99,7 @@ def _init_provider() -> None:
 # Public API
 # ---------------------------------------------------------------------------
 
-def instrument_app(app: FastAPI) -> None:  # noqa: D401 – imperative style
+def instrument_app(app: FastAPI) -> None:  # noqa: D401 - imperative style
     """Attach OTel middleware and (optionally) a /metrics endpoint.  Idempotent."""
     _init_provider()
 
@@ -140,7 +140,7 @@ def instrument_app(app: FastAPI) -> None:  # noqa: D401 – imperative style
 # Clean-up
 # ---------------------------------------------------------------------------
 
-def _shutdown_provider() -> None:  # pragma: no cover – best-effort
+def _shutdown_provider() -> None:  # pragma: no cover - best-effort
     """Idempotent shutdown that stays silent on repeat calls."""
     global _provider  # noqa: PLW0603
 
@@ -156,7 +156,7 @@ def _shutdown_provider() -> None:  # pragma: no cover – best-effort
 
     try:
         p.shutdown()
-    except Exception:  # noqa: BLE001 – ignore transport errors during exit
+    except Exception:  # noqa: BLE001 - ignore transport errors during exit
         pass
     finally:
         _provider = None  # ensure subsequent calls are no-ops

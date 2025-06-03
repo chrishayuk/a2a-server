@@ -35,7 +35,7 @@ __all__ = [
 ]
 
 # ---------------------------------------------------------------------------
-# Lazy singleton – created on first access, not at import-time
+# Lazy singleton - created on first access, not at import-time
 # ---------------------------------------------------------------------------
 
 _app_instance = None

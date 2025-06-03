@@ -37,7 +37,7 @@ def _redis_store():
         mod = importlib.import_module("chuk_session_manager.storage.providers.redis")
     except ModuleNotFoundError as exc:                  # noqa: BLE001
         logger.warning(
-            "Redis backend requested but redis provider not installed – "
+            "Redis backend requested but redis provider not installed - "
             "falling back to in-memory store (%s)", exc
         )
         return _memory_store()

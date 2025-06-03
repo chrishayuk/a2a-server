@@ -5,10 +5,10 @@ Session import / export utilities for the A2A server.
 
 Routes (all require “internal-admin” header)
 -------------------------------------------
-GET    /sessions                       – list all known session-IDs
-GET    /sessions/{session_id}/export   – download a conversation (JSON)
-POST   /sessions/import                – bulk-import conversation history
-DELETE /sessions/{session_id}          – purge a session from the backing store
+GET    /sessions                       - list all known session-IDs
+GET    /sessions/{session_id}/export   - download a conversation (JSON)
+POST   /sessions/import                - bulk-import conversation history
+DELETE /sessions/{session_id}          - purge a session from the backing store
 """
 
 from __future__ import annotations

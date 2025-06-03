@@ -5,84 +5,104 @@ server:
 
 handlers:
   use_discovery: false
-  default_handler: mock_image_agent
-  mock_image_agent:
-    type: a2a_server.tasks.handlers.chuk.image_aware_agent_handler.ImageAwareAgentHandler
-    agent: a2a_server.sample_agents.mock_image_agent.mock_image_agent
-    name: mock_image_agent
-    enable_image_management: true
-    vision_model: gpt-4o
-    vision_provider: openai
+  default_handler: perplexity_agent
+  # 🆕 Perplexity agent --------------------------------------------------
+  perplexity_agent:
+    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
+    agent: a2a_server.sample_agents.perplexity_agent.perplexity_agent
+    name: perplexity_agent
     agent_card:
-      name: Mock Image Agent
-      description: "Demonstrates advanced image session management with visual content creation"
-      version: "1.0.0"
-      documentationUrl: "https://a2a-server.fly.dev/mock_image_agent/docs"
-      provider:
-        organization: "chrishayuk"
-        url: "https://chrishayuk.io"
-      capabilities:
-        streaming: true
-        pushNotifications: false
-        vision: true
-        tools: true
-      authentication:
-        schemes:
-          - "None"
-      defaultInputModes:
-        - "text/plain"
-      defaultOutputModes:
-        - "text/plain"
-        - "image/png"
+      name: Perplexity Agent
+      description: "Uses mock Perplexity tools over SSE to answer questions"
+      version: "0.1.0"
+      capabilities: { streaming: true }
+      defaultInputModes:  ["text/plain"]
+      defaultOutputModes: ["text/plain"]
       skills:
-        - id: chart-generation
-          name: Chart Generation
-          description: "Create charts and graphs from data"
-          tags:
-            - visualization
-            - charts
-            - data-analysis
+        - id: perplexity-search
+          name: Perplexity Search
+          description: "Search or deep-research any topic via Perplexity tools"
+          tags: [search, research]
           examples:
-            - "Create a bar chart of quarterly sales"
-            - "Generate a pie chart showing market share"
-            - "Make a line graph of revenue trends"
+            - "What are the latest AI breakthroughs?"
+            - "Explain quantum computing applications"
+  # mock_image_agent:
+  #   type: a2a_server.tasks.handlers.chuk.image_aware_agent_handler.ImageAwareAgentHandler
+  #   agent: a2a_server.sample_agents.mock_image_agent.mock_image_agent
+  #   name: mock_image_agent
+  #   enable_image_management: true
+  #   vision_model: gpt-4o
+  #   vision_provider: openai
+  #   agent_card:
+  #     name: Mock Image Agent
+  #     description: "Demonstrates advanced image session management with visual content creation"
+  #     version: "1.0.0"
+  #     documentationUrl: "https://a2a-server.fly.dev/mock_image_agent/docs"
+  #     provider:
+  #       organization: "chrishayuk"
+  #       url: "https://chrishayuk.io"
+  #     capabilities:
+  #       streaming: true
+  #       pushNotifications: false
+  #       vision: true
+  #       tools: true
+  #     authentication:
+  #       schemes:
+  #         - "None"
+  #     defaultInputModes:
+  #       - "text/plain"
+  #     defaultOutputModes:
+  #       - "text/plain"
+  #       - "image/png"
+  #     skills:
+  #       - id: chart-generation
+  #         name: Chart Generation
+  #         description: "Create charts and graphs from data"
+  #         tags:
+  #           - visualization
+  #           - charts
+  #           - data-analysis
+  #         examples:
+  #           - "Create a bar chart of quarterly sales"
+  #           - "Generate a pie chart showing market share"
+  #           - "Make a line graph of revenue trends"
         
-        - id: screenshot-capture
-          name: Screenshot Capture
-          description: "Capture screenshots of applications and desktop"
-          tags:
-            - screenshots
-            - capture
-            - interface
-          examples:
-            - "Take a screenshot of the desktop"
-            - "Capture the current application window"
-            - "Get a screenshot of the interface"
+  #       - id: screenshot-capture
+  #         name: Screenshot Capture
+  #         description: "Capture screenshots of applications and desktop"
+  #         tags:
+  #           - screenshots
+  #           - capture
+  #           - interface
+  #         examples:
+  #           - "Take a screenshot of the desktop"
+  #           - "Capture the current application window"
+  #           - "Get a screenshot of the interface"
         
-        - id: diagram-creation
-          name: Diagram Creation
-          description: "Generate flowcharts and process diagrams"
-          tags:
-            - diagrams
-            - flowcharts
-            - processes
-          examples:
-            - "Create a flowchart for user onboarding"
-            - "Generate a process diagram for deployment"
-            - "Make a network diagram"
+  #       - id: diagram-creation
+  #         name: Diagram Creation
+  #         description: "Generate flowcharts and process diagrams"
+  #         tags:
+  #           - diagrams
+  #           - flowcharts
+  #           - processes
+  #         examples:
+  #           - "Create a flowchart for user onboarding"
+  #           - "Generate a process diagram for deployment"
+  #           - "Make a network diagram"
         
-        - id: image-analysis
-          name: Image Analysis
-          description: "Analyze and discuss previously generated images"
-          tags:
-            - analysis
-            - vision
-            - discussion
-          examples:
-            - "What do you see in the chart?"
-            - "Analyze the trends in that graph"
-            - "Describe what's in the screenshot"
-            - "Compare the chart with the diagram"
+  #       - id: image-analysis
+  #         name: Image Analysis
+  #         description: "Analyze and discuss previously generated images"
+  #         tags:
+  #           - analysis
+  #           - vision
+  #           - discussion
+  #         examples:
+  #           - "What do you see in the chart?"
+  #           - "Analyze the trends in that graph"
+  #           - "Describe what's in the screenshot"
+  #           - "Compare the chart with the diagram"
   time_agent:
     type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
     agent: a2a_server.sample_agents.time_agent.time_agent

@@ -32,7 +32,7 @@ from fastapi.encoders import jsonable_encoder
 
 _DISABLE_ENV = "A2A_DISABLE_DEBUG_EVENTS"
 if os.getenv(_DISABLE_ENV):
-    # Short-circuit – export NO-OP stubs so the rest of the codebase can import
+    # Short-circuit - export NO-OP stubs so the rest of the codebase can import
     # these symbols without conditional checks.
     logging.getLogger(__name__).info("Debug-events disabled via %s", _DISABLE_ENV)
 

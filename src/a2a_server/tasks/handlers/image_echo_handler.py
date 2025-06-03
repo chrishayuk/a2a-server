@@ -71,7 +71,7 @@ class ImageEchoHandler(TaskHandler):
             if "data" in pdata and (ptype in {"image_base64", "image_file", ""}):
                 try:
                     try:
-                        # permissive decode – tolerate newlines or missing padding
+                        # permissive decode - tolerate newlines or missing padding
                         img_bytes = base64.b64decode(pdata["data"], validate=False)
                     except Exception:
                         # data:URI style? strip prefix if present and retry

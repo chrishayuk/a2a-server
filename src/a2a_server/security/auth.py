@@ -12,7 +12,7 @@ _bearer = HTTPBearer(auto_error=False)
 
 def require_admin_token(
     creds: HTTPAuthorizationCredentials | None = Security(_bearer),
-):  # noqa: D401 – imperative helper
+):  # noqa: D401 - imperative helper
     """Guard that **rejects** unless `Authorization: Bearer <token>` matches
     `$A2A_ADMIN_TOKEN`.  If the env-var is **unset** we assume *dev mode* and
     allow all traffic (so `pytest` keeps working).

@@ -9,7 +9,27 @@ server:
 
 handlers:
   use_discovery: false
-  default: pirate_agent
+  default_handler: perplexity_agent
+  # 🆕 Perplexity agent --------------------------------------------------
+  perplexity_agent:
+    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
+    agent: a2a_server.sample_agents.perplexity_agent.perplexity_agent
+    name: perplexity_agent
+    agent_card:
+      name: Perplexity Agent
+      description: "Uses mock Perplexity tools over SSE to answer questions"
+      version: "0.1.0"
+      capabilities: { streaming: true }
+      defaultInputModes:  ["text/plain"]
+      defaultOutputModes: ["text/plain"]
+      skills:
+        - id: perplexity-search
+          name: Perplexity Search
+          description: "Search or deep-research any topic via Perplexity tools"
+          tags: [search, research]
+          examples:
+            - "What are the latest AI breakthroughs?"
+            - "Explain quantum computing applications"
 
   pirate_agent:
     type: a2a_server.tasks.handlers.adk.google_adk_handler.GoogleADKHandler

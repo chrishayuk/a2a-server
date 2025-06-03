@@ -25,7 +25,7 @@ def _write_yaml(tmp_path, content: str) -> str:
 async def test_load_default_config():
     """Calling without a path returns an *exact* copy of DEFAULT_CONFIG."""
     cfg = await load_config(None)
-    # Do *not* compare identity – we want a **copy**
+    # Do *not* compare identity - we want a **copy**
     assert cfg == DEFAULT_CONFIG and cfg is not DEFAULT_CONFIG
 
 

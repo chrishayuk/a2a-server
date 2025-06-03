@@ -21,7 +21,7 @@ Endpoints
 /ready
     • Returns **200** **only** when at least one task-handler is
       registered **and** the default handler exists.  
-    • Use as *readinessProbe* – e.g. fail fast if startup config is bad.
+    • Use as *readinessProbe* - e.g. fail fast if startup config is bad.
 
 /agent-cards
     • Convenience wrapper around :func:`a2a_server.agent_card.get_agent_cards`
@@ -101,7 +101,7 @@ def register_health_routes(  # noqa: D401
     # ── /health ───────────────────────────────────────────────────────── #
     @app.get("/health", response_class=JSONResponse, tags=["Health"])
     async def health() -> Dict[str, Any]:  # noqa: D401
-        """Basic liveness probe – always returns HTTP 200 when process is up."""
+        """Basic liveness probe - always returns HTTP 200 when process is up."""
         return {
             "status": "ok",
             "service": "A2A Server",
@@ -115,7 +115,7 @@ def register_health_routes(  # noqa: D401
     @app.get("/ready", response_class=JSONResponse, tags=["Health"])
     async def ready() -> Dict[str, Any]:  # noqa: D401
         """
-        Readiness probe – returns 200 only when the server is really usable
+        Readiness probe - returns 200 only when the server is really usable
         (at least one handler + a default handler active).
         """
         handlers = _handler_names(task_manager)

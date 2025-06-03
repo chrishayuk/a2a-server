@@ -33,7 +33,7 @@ from a2a_server.tasks.task_manager import Task, TaskManager
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Tunables – override via env vars if needed
+# Tunables - override via env vars if needed
 # ---------------------------------------------------------------------------
 
 MAX_BODY = int(os.getenv("MAX_JSONRPC_BODY", 2 * 1024 * 1024))  # 2 MiB

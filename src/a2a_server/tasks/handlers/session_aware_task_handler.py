@@ -63,7 +63,7 @@ class SessionAwareTaskHandler(TaskHandler):
         # InfiniteConversationManager.  In production the real
         # ``SummarizationStrategy`` behaves like an ``enum.Enum`` *and* is
         # callable.  In the unit‑tests it is replaced by a very thin mock
-        # class whose constructor **takes no arguments** – attempting to call
+        # class whose constructor **takes no arguments** - attempting to call
         # it therefore raises *TypeError*.
         # ------------------------------------------------------------------
         raw_strategy: Any = (
@@ -107,7 +107,7 @@ class SessionAwareTaskHandler(TaskHandler):
         """Return the *agent* session‑id for a given external *A2A* id.
 
         Creates a new agent session (via :pyclass:`~Session.create`) on‑demand
-        and caches the mapping.  All exceptions are caught and logged – the
+        and caches the mapping.  All exceptions are caught and logged - the
         function returns *None* in error situations so that the caller can
         degrade gracefully rather than exploding inside tests.
         """
@@ -115,12 +115,12 @@ class SessionAwareTaskHandler(TaskHandler):
         if not a2a_session_id:
             return None
 
-        # Fast path – already known.
+        # Fast path - already known.
         if a2a_session_id in self._session_map:
             return self._session_map[a2a_session_id]
 
         # ------------------------------------------------------------------
-        # Need to create a *new* agent session.  ``Session.create`` is async –
+        # Need to create a *new* agent session.  ``Session.create`` is async -
         # here we need to bridge the sync/async boundary.  In production this
         # should ideally be re‑structured so that we never block the running
         # event‑loop, but for now we reproduce the original behaviour and add
@@ -131,18 +131,18 @@ class SessionAwareTaskHandler(TaskHandler):
             try:
                 loop = asyncio.get_event_loop()
             except RuntimeError:
-                # "There is no current event loop in thread …" – fine.
+                # "There is no current event loop in thread …" - fine.
                 pass
 
             if loop and loop.is_running():
-                # We *are* inside a running loop – use ``ensure_future`` and
+                # We *are* inside a running loop - use ``ensure_future`` and
                 # ``run_until_complete`` on a *new* loop to avoid dead‑locks.
                 # This path is only taken in unit‑tests where an outer loop
                 # might already be active.
                 future = Session.create()
                 agent_session = loop.run_until_complete(future)  # type: ignore[arg-type]
             else:
-                # No loop or not running yet – safe to just *run* the coroutine.
+                # No loop or not running yet - safe to just *run* the coroutine.
                 agent_session = asyncio.run(Session.create())
 
             agent_session_id = agent_session.id  # type: ignore[attr-defined]
@@ -207,7 +207,7 @@ class SessionAwareTaskHandler(TaskHandler):
             return None
 
     # ------------------------------------------------------------------
-    # Callback stub – must be implemented by concrete subclasses
+    # Callback stub - must be implemented by concrete subclasses
     # ------------------------------------------------------------------
     async def _llm_call(self, messages: List[Dict[str, Any]], model: str = "default") -> str:  # noqa: D401
         """LLM callback used for summarization.

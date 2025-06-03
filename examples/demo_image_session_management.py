@@ -181,7 +181,7 @@ async def test_image_session_manager():
     print("="*50)
     
     try:
-        from a2a_server.session.image_session_manager import ImageSessionManager
+        from a2a_server.session.image_session_manager_old import ImageSessionManager
         
         # Create manager with mock vision agent
         vision_agent = MockVisionAgent()
@@ -274,8 +274,8 @@ async def test_enhanced_conversation_manager():
     print("="*50)
     
     try:
-        from a2a_server.tasks.handlers.chuk.enhanced_conversation_manager import EnhancedConversationManager
-        from a2a_server.session.image_session_manager import ImageSessionManager
+        from a2a_server.tasks.handlers.chuk.enhanced_conversation_manager_old import EnhancedConversationManager
+        from a2a_server.session.image_session_manager_old import ImageSessionManager
         
         # Create with mock components
         vision_agent = MockVisionAgent()
@@ -369,7 +369,7 @@ async def test_image_aware_handler():
                 
                 # Mock image manager
                 vision_agent = MockVisionAgent()
-                from a2a_server.session.image_session_manager import ImageSessionManager
+                from a2a_server.session.image_session_manager_old import ImageSessionManager
                 self.image_manager = ImageSessionManager(vision_agent)
                 
                 print("✅ Mock handler initialized with image management")
@@ -467,7 +467,7 @@ async def test_provider_configurations():
     print("="*50)
     
     try:
-        from a2a_server.session.image_session_manager import create_image_session_manager
+        from a2a_server.session.image_session_manager_old import create_image_session_manager
         
         # Test different provider configs (simplified to avoid ProviderConfig issues)
         configs = [
@@ -510,8 +510,8 @@ async def test_integration_scenario():
     print("="*50)
     
     try:
-        from a2a_server.session.image_session_manager import ImageSessionManager
-        from a2a_server.tasks.handlers.chuk.enhanced_conversation_manager import EnhancedConversationManager
+        from a2a_server.session.image_session_manager_old import ImageSessionManager
+        from a2a_server.tasks.handlers.chuk.enhanced_conversation_manager_old import EnhancedConversationManager
         
         # Create the full stack
         vision_agent = MockVisionAgent()
@@ -633,7 +633,7 @@ async def main():
     try:
         # Try importing our modules
         import a2a_server.session.models
-        import a2a_server.session.image_session_manager
+        import a2a_server.session.image_session_manager_old
         print("✅ All required modules available")
     except ImportError as e:
         print(f"❌ Missing required modules: {e}")

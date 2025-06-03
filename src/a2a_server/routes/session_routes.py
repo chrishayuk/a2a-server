@@ -60,7 +60,7 @@ def register_session_routes(app: FastAPI) -> None:  # noqa: D401
 
     guard = Depends(_admin_guard)  # evaluated for every request
 
-    # ── /sessions – list active sessions ─────────────────────────────── #
+    # ── /sessions - list active sessions ─────────────────────────────── #
     @app.get(
         "/sessions",
         tags=["Sessions"],
@@ -90,7 +90,7 @@ def register_session_routes(app: FastAPI) -> None:  # noqa: D401
             "total_sessions_in_store": len(await session_store.list_sessions()),
         }
 
-    # ── /sessions/{id}/history – conversation log ───────────────────── #
+    # ── /sessions/{id}/history - conversation log ───────────────────── #
     @app.get(
         "/sessions/{session_id}/history",
         tags=["Sessions"],
@@ -118,7 +118,7 @@ def register_session_routes(app: FastAPI) -> None:  # noqa: D401
             "messages": history,
         }
 
-    # ── /sessions/{id}/tokens – token usage ─────────────────────────── #
+    # ── /sessions/{id}/tokens - token usage ─────────────────────────── #
     @app.get(
         "/sessions/{session_id}/tokens",
         tags=["Sessions"],

@@ -98,4 +98,4 @@ async def test_heartbeat_and_max_lifetime(monkeypatch, app_with_sse):
         await asyncio.sleep(0.35)
 
     assert got_heartbeat, "never saw heartbeat comment"
-    # no assertion on explicit close necessary – contextmanager exiting without error implies closure
+    # no assertion on explicit close necessary - contextmanager exiting without error implies closure

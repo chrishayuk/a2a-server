@@ -3,17 +3,17 @@ from __future__ import annotations
 
 Design goals
 ------------
-* **Replies first** – every RPC reply is written *before* any
+* **Replies first** - every RPC reply is written *before* any
   server-side task event that is already waiting in the queue.  This is
   what `tests/transport/test_ws.py::test_back_pressure_drops_not_block`
   asserts.
-* **Chatter buffer** – background events (task-update spam) are placed
+* **Chatter buffer** - background events (task-update spam) are placed
   in a **single** bounded FIFO queue (32 frames). If the queue is full
   we drop the *oldest* event, keeping memory bounded while favouring the
   freshest data.
-* **Dedicated writer** – a single task drains the buffer so the main
+* **Dedicated writer** - a single task drains the buffer so the main
   coroutine never blocks on `ws.send_*`.
-* **Graceful teardown** – all tasks are cancelled cleanly on disconnect.
+* **Graceful teardown** - all tasks are cancelled cleanly on disconnect.
 """
 
 import asyncio
@@ -35,7 +35,7 @@ BUFFER_SIZE = 32  # outbound chatter frames per connection
 aasync = None  # historical typo appeasement
 
 # ---------------------------------------------------------------------------
-# Public helper – register endpoints
+# Public helper - register endpoints
 # ---------------------------------------------------------------------------
 
 def setup_ws(
@@ -64,7 +64,7 @@ def setup_ws(
 
 
 # ---------------------------------------------------------------------------
-# Internal – connection handler
+# Internal - connection handler
 # ---------------------------------------------------------------------------
 
 async def _serve(
@@ -81,7 +81,7 @@ async def _serve(
     out_q: asyncio.Queue[str] = asyncio.Queue(maxsize=BUFFER_SIZE)
 
     # ------------------------------------------------------------------
-    # Background writer – drains *out_q* so the main coroutine never
+    # Background writer - drains *out_q* so the main coroutine never
     # blocks on the kernel socket buffers.
     # ------------------------------------------------------------------
 
@@ -111,13 +111,13 @@ async def _serve(
                 _ = out_q.get_nowait()  # drop oldest to make room
             out_q.put_nowait(_encode(event_obj))
         except asyncio.QueueFull:
-            logger.warning("WS buffer still full – dropping event for %s", handler_name or "<default>")
+            logger.warning("WS buffer still full - dropping event for %s", handler_name or "<default>")
         except asyncio.QueueEmpty:
             # Very unlikely race: queue became empty after the *full()* check.
             out_q.put_nowait(_encode(event_obj))
 
     # ------------------------------------------------------------------
-    # Main loop – multiplex *client frames* vs *server events*.
+    # Main loop - multiplex *client frames* vs *server events*.
     # We **delay** forwarding of server events until the first client
     # request has been processed. This ensures the corresponding reply
     # is the very first frame the browser receives (see tests).
@@ -154,7 +154,7 @@ async def _serve(
 
                 if not first_request_seen:
                     # Discard any background events that accumulated **before** the
-                    # very first client request – they are likely irrelevant.
+                    # very first client request - they are likely irrelevant.
                     stalled_events.clear()
                     # ALSO purge anything already waiting on the bus queue so we
                     # don’t leak stale frames after the client closes.

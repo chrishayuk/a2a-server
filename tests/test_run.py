@@ -3,7 +3,7 @@
 Unit tests for the async-native CLI entry-point (``a2a_server.run``).
 
 * Works with httpx ≥ 0.27 (``ASGITransport``).
-* Reflects the simplified `_serve` implementation – no manual stop Event.
+* Reflects the simplified `_serve` implementation - no manual stop Event.
 """
 
 from __future__ import annotations

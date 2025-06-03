@@ -29,7 +29,7 @@ __all__ = ["_build_app", "_serve", "run_server"]
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_app(cfg: dict, args) -> FastAPI:  # noqa: ANN001 – CLI helper
+def _build_app(cfg: dict, args) -> FastAPI:  # noqa: ANN001 - CLI helper
     """Instantiate a FastAPI app according to *cfg*."""
     handlers_cfg = cfg["handlers"]
 

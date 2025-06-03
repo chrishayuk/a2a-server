@@ -210,7 +210,7 @@ else:
                     logger.debug("EventBus subscription count = %d", count)
                     await asyncio.sleep(5)
             except asyncio.CancelledError:
-                logger.info("Subscription monitor cancelled – exiting")
+                logger.info("Subscription monitor cancelled - exiting")
 
         logger.info("EventBus instrumentation enabled")
         return monitor_subscriptions

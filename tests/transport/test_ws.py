@@ -70,7 +70,7 @@ def uvicorn_server():
             try:
                 yield SimpleNamespace(host="127.0.0.1", port=port)
             finally:
-                # Request shutdown and wait up to 2 s – if still alive, cancel
+                # Request shutdown and wait up to 2 s - if still alive, cancel
                 server.should_exit = True
                 try:
                     await asyncio.wait_for(serve_task, timeout=2)
