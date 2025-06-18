@@ -27,7 +27,7 @@ from a2a_json_rpc.spec import (
     TextPart,
 )
 from a2a_server.pubsub import EventBus
-from a2a_server.tasks.task_handler import TaskHandler
+from a2a_server.tasks.handlers.task_handler import TaskHandler
 
 __all__ = [
     "TaskManager",

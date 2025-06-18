@@ -46,15 +46,15 @@ MAX_BODY: int = int(os.getenv("MAX_JSONRPC_BODY", 2 * 1024 * 1024))  # 2 MiB
 REQUEST_TIMEOUT: float = float(os.getenv("JSONRPC_TIMEOUT", 15.0))    # seconds
 
 # ---------------------------------------------------------------------------
-# Middleware: streaming body‑size limiter
+# Middleware: streaming body-size limiter
 # ---------------------------------------------------------------------------
 
 
 class BodySizeLimiterMiddleware(BaseHTTPMiddleware):
     """Abort requests whose bodies exceed *max_body* bytes.
 
-    * If *Content‑Length* is present and already over the threshold we fail
-      **immediately** (no body read, cheap fast‑path).
+    * If *Content-Length* is present and already over the threshold we fail
+      **immediately** (no body read, cheap fast-path).
     * Otherwise we wrap the ASGI *receive* channel and count bytes chunk by
       chunk, raising once the cumulative total crosses the limit.
     """
@@ -64,7 +64,7 @@ class BodySizeLimiterMiddleware(BaseHTTPMiddleware):
         self.max_body = max_body
 
     async def dispatch(self, request: Request, call_next):  # type: ignore[override]
-        # Fast‑path: respect declared Content‑Length --------------------------------
+        # Fast-path: respect declared Content-Length --------------------------------
         try:
             clen = int(request.headers.get("content-length", 0))
         except ValueError:
@@ -72,7 +72,7 @@ class BodySizeLimiterMiddleware(BaseHTTPMiddleware):
         if clen > self.max_body:
             return JSONResponse({"detail": "Payload too large"}, status_code=413)
 
-        # Slow‑path: stream & count --------------------------------------------------
+        # Slow-path: stream & count --------------------------------------------------
         total = 0
         original_receive = request._receive  # type: ignore[attr-defined]
 
@@ -116,7 +116,7 @@ async def _create_task(
     bound: Callable[..., Awaitable[Task]] = original.__get__(tm, tm.__class__)  # type: ignore[assignment]
     sig = inspect.signature(original)
 
-    # New‑style API - TaskManager accepts ``task_id``
+    # New-style API - TaskManager accepts ``task_id``
     if "task_id" in sig.parameters:
         task = await bound(
             params.message,
@@ -189,7 +189,7 @@ async def _stream_send_subscribe(
                     body = event.model_dump(exclude_none=True)
                     body["id"] = client_id
 
-                # Off‑thread JSON serialisation (CPU‑bound when streams are busy)
+                # Off-thread JSON serialisation (CPU-bound when streams are busy)
                 wire_dict = JSONRPCRequest(
                     jsonrpc="2.0", id=payload.id, method="tasks/event", params=body
                 ).model_dump(mode="json")
@@ -219,7 +219,7 @@ async def _stream_send_subscribe(
 
 
 # ---------------------------------------------------------------------------
-# Route‑mount helper (public)
+# Route-mount helper (public)
 # ---------------------------------------------------------------------------
 
 
@@ -229,7 +229,7 @@ def setup_http(
     task_manager: TaskManager,
     event_bus: Optional[EventBus] = None,
 ) -> None:
-    """Mount default + per‑handler JSON‑RPC endpoints on *app*."""
+    """Mount default + per-handler JSON-RPC endpoints on *app*."""
 
     # ---- global middleware (size guard) ----------------------------------
     app.add_middleware(BodySizeLimiterMiddleware, max_body=MAX_BODY)
@@ -256,7 +256,7 @@ def setup_http(
             payload.params["id"] = str(uuid.uuid4())
         return await _dispatch(payload)
 
-    # ---- per‑handler sub‑trees  ------------------------------------------
+    # ---- per-handler sub-trees  ------------------------------------------
 
     for handler in task_manager.get_handlers():
 

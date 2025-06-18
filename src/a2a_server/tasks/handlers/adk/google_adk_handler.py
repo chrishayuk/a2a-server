@@ -24,13 +24,13 @@ from a2a_json_rpc.spec import (
     TaskArtifactUpdateEvent
 )
 
-from a2a_server.tasks.task_handler import TaskHandler
+from a2a_server.tasks.handlers.task_handler import TaskHandler
 from a2a_server.tasks.handlers.adk.adk_agent_adapter import ADKAgentAdapter
 from a2a_server.tasks.handlers.adk.google_adk_protocol import GoogleADKAgentProtocol
 
 # Check if session handling is available
 try:
-    from a2a_server.tasks.session_aware_task_handler import SESSIONS_AVAILABLE
+    from a2a_server.tasks.handlers.session_aware_task_handler import SESSIONS_AVAILABLE
     from a2a_server.tasks.handlers.adk.session_enabled_adk_handler import SessionEnabledADKHandler
 except ImportError:
     SESSIONS_AVAILABLE = False

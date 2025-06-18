@@ -55,7 +55,7 @@ async def _create_task(
     bound: Callable[..., Awaitable[Task]] = original.__get__(tm, tm.__class__)  # type: ignore[assignment]
     sig = inspect.signature(original)
 
-    if "task_id" in sig.parameters:  # new‑style
+    if "task_id" in sig.parameters:  # new-style
         task = await bound(
             params.message, session_id=params.session_id, handler_name=handler, task_id=client_id
         )
@@ -151,9 +151,9 @@ def setup_http(
     task_manager: TaskManager,
     event_bus: Optional[EventBus] = None,
 ) -> None:
-    """Mount default + per‑handler JSON‑RPC endpoints on *app*."""
+    """Mount default + per-handler JSON-RPC endpoints on *app*."""
 
-    # ---- global middleware: body‑size guard --------------------------------
+    # ---- global middleware: body-size guard --------------------------------
     @app.middleware("http")
     async def _limit_body(request: Request, call_next):  # noqa: D401, ANN001
         if int(request.headers.get("content-length", 0)) > MAX_BODY:
@@ -169,7 +169,7 @@ def setup_http(
             async with asyncio.timeout(REQUEST_TIMEOUT):
                 raw = await protocol._handle_raw_async(req.model_dump())
         except TimeoutError:
-            raise HTTPException(504, "Handler timed‑out") from None
+            raise HTTPException(504, "Handler timed-out") from None
 
         return Response(status_code=204) if raw is None else JSONResponse(jsonable_encoder(raw))
 
@@ -180,7 +180,7 @@ def setup_http(
             payload.params["id"] = str(uuid.uuid4())
         return await _dispatch(payload)
 
-    # ---- one sub‑tree per handler -----------------------------------------
+    # ---- one sub-tree per handler -----------------------------------------
     for handler in task_manager.get_handlers():
 
         @app.post(f"/{handler}/rpc")  # type: ignore[misc]

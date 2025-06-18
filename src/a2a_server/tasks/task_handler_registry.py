@@ -2,7 +2,7 @@
 from typing import Optional, Dict
 
 # a2a imports
-from a2a_server.tasks.task_handler import TaskHandler
+from a2a_server.tasks.handlers.task_handler import TaskHandler
 
 class TaskHandlerRegistry:
     """Registry for task handlers that can be dynamically selected."""

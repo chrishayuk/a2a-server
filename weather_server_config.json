@@ -3,7 +3,7 @@
     "weather": {
       "command": "uvx",
       "args": [
-        "mcp_weather_server"
+        "mcp-server-weather"
       ]
     }
   }

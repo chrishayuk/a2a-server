@@ -22,7 +22,7 @@ from a2a_json_rpc.spec import (
     TextPart,
 )
 
-from a2a_server.tasks.task_handler import TaskHandler
+from a2a_server.tasks.handlers.task_handler import TaskHandler
 
 
 class PirateVisionHandler(TaskHandler):
@@ -38,7 +38,7 @@ class PirateVisionHandler(TaskHandler):
         message: Message,
         session_id: Optional[str] = None,
     ) -> AsyncIterator[TaskStatusUpdateEvent | TaskArtifactUpdateEvent]:
-        """Stream three short pirate‑speak lines then finish."""
+        """Stream three short pirate-speak lines then finish."""
         # ── working … ───────────────────────────────────────────────
         yield TaskStatusUpdateEvent(
             id=task_id,
@@ -50,9 +50,9 @@ class PirateVisionHandler(TaskHandler):
         await asyncio.sleep(0.3)
 
         pirate_lines = [
-            "Arrr, I spy a majestic beast o’ legend!",
-            "Its mane be flowin’ like golden doubloons in the sun!",
-            "A fine treasure fer any sailor’s eyes, aye!",
+            "Arrr, I spy a majestic beast o' legend!",
+            "Its mane be flowin' like golden doubloons in the sun!",
+            "A fine treasure fer any sailor's eyes, aye!",
         ]
 
         # stream lines one by one

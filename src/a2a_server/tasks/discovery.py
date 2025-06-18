@@ -26,9 +26,9 @@ import logging
 import pkgutil
 import sys
 import types
-from typing import Iterator, List, Optional, Type
+from typing import Iterator, List, Optional, Type, Dict, Any
 
-from a2a_server.tasks.task_handler import TaskHandler
+from a2a_server.tasks.handlers.task_handler import TaskHandler
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ def _iter_entry_points() -> Iterator[types.SimpleNamespace]:
     except Exception:  # pragma: no cover  pylint: disable=broad-except
         pass
 
-    # Older Pythons - fall back to setuptools’ pkg_resources
+    # Older Pythons - fall back to setuptools' pkg_resources
     try:
         import pkg_resources
 
@@ -175,18 +175,26 @@ def register_discovered_handlers(
     task_manager,
     packages: Optional[List[str]] = None,
     default_handler_class: Optional[Type[TaskHandler]] = None,
+    extra_kwargs: Optional[Dict[str, Any]] = None,
 ) -> None:
     """
     Instantiate and register every discovered handler with *task_manager*.
 
     The first registered handler (or the one explicitly passed via
     *default_handler_class*) becomes the default.
+    
+    Args:
+        task_manager: The task manager to register handlers with
+        packages: List of packages to scan for handlers
+        default_handler_class: Optional specific class to use as default
+        extra_kwargs: Additional keyword arguments to pass to handler constructors
     """
     handlers = discover_all_handlers(packages)
     if not handlers:
         logger.warning("No task handlers discovered")
         return
 
+    extra_kwargs = extra_kwargs or {}
     default_registered = False
     registered = 0
     default_name = None
@@ -194,7 +202,17 @@ def register_discovered_handlers(
 
     for cls in handlers:
         try:
-            handler = cls()
+            # Get the constructor signature to see what parameters it accepts
+            sig = inspect.signature(cls.__init__)
+            valid_params = set(sig.parameters.keys()) - {"self"}
+            
+            # Filter extra_kwargs to only include parameters the constructor accepts
+            filtered_kwargs = {k: v for k, v in extra_kwargs.items() if k in valid_params}
+            
+            if filtered_kwargs:
+                logger.debug("Passing %s to %s constructor", filtered_kwargs.keys(), cls.__name__)
+            
+            handler = cls(**filtered_kwargs)
             is_default = (
                 (default_handler_class is not None and cls is default_handler_class)
                 or (default_handler_class is None and not default_registered)

@@ -31,14 +31,14 @@ async def test_load_default_config():
 
 @pytest.mark.asyncio
 async def test_load_nonexistent_path(tmp_path):
-    """Non‑existent file path should fall back to defaults (silently)."""
+    """Non-existent file path should fall back to defaults (silently)."""
     cfg = await load_config(tmp_path / "does_not_exist.yml")
     assert cfg == DEFAULT_CONFIG
 
 
 @pytest.mark.asyncio
 async def test_simple_merge(tmp_path):
-    """Top‑level keys in YAML override defaults while others stay intact."""
+    """Top-level keys in YAML override defaults while others stay intact."""
     yaml_path = _write_yaml(
         tmp_path,
         """
@@ -72,7 +72,7 @@ async def test_deep_merge_nested(tmp_path):
 
 @pytest.mark.asyncio
 async def test_override_and_add_keys(tmp_path):
-    """We can add completely new top‑level sections via YAML."""
+    """We can add completely new top-level sections via YAML."""
     yaml_path = _write_yaml(
         tmp_path,
         """

@@ -5,7 +5,7 @@ import inspect
 import logging
 from typing import Any, Dict, Tuple, List, Optional, Type
 
-from a2a_server.tasks.task_handler import TaskHandler
+from a2a_server.tasks.handlers.task_handler import TaskHandler
 from a2a_server.tasks.discovery import discover_all_handlers
 
 def find_handler_class(name: str) -> Optional[Type[TaskHandler]]:
@@ -19,7 +19,7 @@ def find_handler_class(name: str) -> Optional[Type[TaskHandler]]:
             if issubclass(cls, TaskHandler):
                 return cls
         except Exception:
-            logging.error("Couldn’t import %s", name, exc_info=True)
+            logging.error("Couldn't import %s", name, exc_info=True)
         return None
 
     # auto-discovered by class name

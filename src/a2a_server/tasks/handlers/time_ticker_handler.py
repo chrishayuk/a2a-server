@@ -21,7 +21,7 @@ from a2a_json_rpc.spec import (
     Message,
 )
 
-from a2a_server.tasks.task_handler import TaskHandler
+from a2a_server.tasks.handlers.task_handler import TaskHandler
 
 
 class TimeTickerHandler(TaskHandler):
@@ -37,12 +37,16 @@ class TimeTickerHandler(TaskHandler):
         message: Message,
         session_id: Optional[str] = None,
     ) -> AsyncIterable[TaskStatusUpdateEvent | TaskArtifactUpdateEvent]:
+        
         # ── initial state ───────────────────────────────────────────────
         yield TaskStatusUpdateEvent(
             id=task_id,
             status=TaskStatus(state=TaskState.working),
             final=False,
         )
+        
+        # Small delay to ensure SSE clients are connected
+        await asyncio.sleep(0.5)
 
         # ── 10 ticks ────────────────────────────────────────────────────
         for idx in range(10):
@@ -50,10 +54,15 @@ class TimeTickerHandler(TaskHandler):
             artifact = Artifact(
                 name="tick",
                 index=idx,
-                parts=[TextPart(type="text", text=f"UTC time: {now}")],
+                parts=[TextPart(type="text", text=f"UTC time tick {idx + 1}/10: {now}")],
             )
+            
+            # Yield the artifact
             yield TaskArtifactUpdateEvent(id=task_id, artifact=artifact)
-            await asyncio.sleep(1)
+            
+            # Wait 1 second before next tick (except on last iteration)
+            if idx < 9:
+                await asyncio.sleep(1)
 
         # ── completed ───────────────────────────────────────────────────
         yield TaskStatusUpdateEvent(

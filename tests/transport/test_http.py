@@ -33,7 +33,7 @@ async def _rpc(ac: AsyncClient, id_: int, method: str, params: Dict[str, Any] | 
 
 
 # ---------------------------------------------------------------------------
-# happy‑path scenarios (kept from original test suite)
+# happy-path scenarios (kept from original test suite)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -134,7 +134,7 @@ async def test_request_timeout(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# SSE - at least one smoke‑test (sendSubscribe)
+# SSE - at least one smoke-test (sendSubscribe)
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_send_subscribe_smoke():
@@ -143,11 +143,11 @@ async def test_send_subscribe_smoke():
             "id": "ignored",
             "message": {"role": "user", "parts": [{"type": "text", "text": "Hi"}]},
         }
-        # The server returns 200 immediately with a JSON‑RPC envelope - we just smoke‑check.
+        # The server returns 200 immediately with a JSON-RPC envelope - we just smoke-check.
         r = await _rpc(ac, 40, "tasks/sendSubscribe", sub_params)
         assert r.status_code == 200
         assert r.json()["result"]["status"]["state"] in _OK_STATES
 
-        # cancel to tidy‑up
+        # cancel to tidy-up
         tid = r.json()["result"]["id"]
         await _rpc(ac, 41, "tasks/cancel", {"id": tid})

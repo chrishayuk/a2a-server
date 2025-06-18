@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "a2a-server"
-version = "0.2"
+version = "0.3"
 description = "In-memory FSM for the A2A Protocol with Pydantic v2 models"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,9 +24,9 @@ dependencies = [
   "opentelemetry-exporter-otlp>=1.33.1",
   "opentelemetry-exporter-prometheus>=0.54b1",
   "aiofiles>=24.1.0",
-  "chuk-session-manager>=0.1.0",
-  "chuk-llm>=0.1.8",
-  "chuk-tool-processor>=0.3",
+  "chuk-llm>=0.3",
+  "chuk-tool-processor>=0.4.1",
+  "chuk-ai-session-manager>=0.4",
 ]
 
 [project.optional-dependencies]

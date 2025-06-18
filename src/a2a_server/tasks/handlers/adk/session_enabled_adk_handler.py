@@ -1,4 +1,3 @@
-
 # File: a2a_server/tasks/handlers/adk/session_enabled_adk_handler.py
 import asyncio
 import logging
@@ -22,6 +21,9 @@ class SessionEnabledADKHandler(SessionAwareTaskHandler):
     
     This is used by the GoogleADKHandler when session support is enabled.
     """
+    
+    # Mark as abstract to exclude from automatic discovery
+    abstract = True
     
     def __init__(
         self, 

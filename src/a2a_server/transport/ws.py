@@ -157,13 +157,13 @@ async def _serve(
                     # very first client request - they are likely irrelevant.
                     stalled_events.clear()
                     # ALSO purge anything already waiting on the bus queue so we
-                    # don’t leak stale frames after the client closes.
+                    # don't leak stale frames after the client closes.
                     try:
                         while True:
                             _ = bus_q.get_nowait()
                     except asyncio.QueueEmpty:
                         pass
-                    # restart listener so we don’t process the event that was
+                    # restart listener so we don't process the event that was
                     # already fetched into the *listener* task.
                     listener.cancel()
                     await asyncio.gather(listener, return_exceptions=True)

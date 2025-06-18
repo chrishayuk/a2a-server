@@ -1,27 +1,32 @@
 #!/usr/bin/env python3
+# a2a_server/run.py - FIXED to apply logging BEFORE imports
 from __future__ import annotations
 """Async-native CLI entry-point for the A2A server.
 
-Changes (May-2025)
-------------------
+Changes (June-2025)
+-------------------
+* FIXED: Apply logging configuration IMMEDIATELY to prevent startup noise
 * Uvicorn handles signals; no manual SIGINT juggling.
 * Awaitable `load_config` keeps startup async.
-* Added log-level tweak to silence Uvicorn lifespan `CancelledError` tracebacks.
 """
-
-import asyncio
 import logging
 import os
 from typing import Optional
 
+# CRITICAL: Set up quiet logging IMMEDIATELY before any other imports
+logging.getLogger('a2a_server.tasks.discovery').setLevel(logging.ERROR)
+logging.getLogger('chuk_sessions.session_manager').setLevel(logging.WARNING)
+logging.getLogger('chuk_ai_session_manager.session_storage').setLevel(logging.WARNING)
+logging.getLogger('asyncio').setLevel(logging.ERROR)
+logging.getLogger('google_adk.google.adk.models.registry').setLevel(logging.ERROR)
+
+import asyncio
 import uvicorn
 from fastapi import FastAPI
 
 from a2a_server.arguments import parse_args
 from a2a_server.config import load_config
-from a2a_server.handlers_setup import setup_handlers
 from a2a_server.logging import configure_logging
-from a2a_server.app import create_app
 
 __all__ = ["_build_app", "_serve", "run_server"]
 
@@ -31,6 +36,10 @@ __all__ = ["_build_app", "_serve", "run_server"]
 
 def _build_app(cfg: dict, args) -> FastAPI:  # noqa: ANN001 - CLI helper
     """Instantiate a FastAPI app according to *cfg*."""
+    # Import these AFTER early logging is set
+    from a2a_server.handlers_setup import setup_handlers
+    from a2a_server.app import create_app
+    
     handlers_cfg = cfg["handlers"]
 
     all_handlers, default = setup_handlers(handlers_cfg)
@@ -90,10 +99,10 @@ async def _main_async() -> None:
     if args.no_discovery:
         cfg["handlers"]["use_discovery"] = False
 
-    # ── logging ---------------------------------------------------------
-    L = cfg["logging"]
+    # ── Apply comprehensive logging configuration ──────────────────────
+    L = cfg.get("logging", {})
     configure_logging(
-        level_name=L["level"],
+        level_name=L.get("level", "info"),
         file_path=L.get("file"),
         verbose_modules=L.get("verbose_modules", []),
         quiet_modules=L.get("quiet_modules", {}),
@@ -111,9 +120,9 @@ async def _main_async() -> None:
                 print(r.path)
 
     # ── runtime ---------------------------------------------------------
-    host = cfg["server"].get("host", "0.0.0.0")
-    port = int(os.getenv("PORT", cfg["server"].get("port", 8000)))
-    log_level = L["level"]
+    host = cfg.get("server", {}).get("host", "0.0.0.0")
+    port = int(os.getenv("PORT", cfg.get("server", {}).get("port", 8000)))
+    log_level = L.get("level", "info")
 
     await _serve(app, host, port, log_level)
 

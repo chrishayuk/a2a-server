@@ -17,7 +17,7 @@ from a2a_json_rpc.spec import (
 )
 from a2a_server.pubsub import EventBus
 from a2a_server.tasks.task_manager import TaskManager, TaskNotFound, InvalidTransition
-from a2a_server.tasks.task_handler import TaskHandler
+from a2a_server.tasks.handlers.task_handler import TaskHandler
 from a2a_server.tasks.handlers.echo_handler import EchoHandler
 
 # ---------------------------------------------------------------------------

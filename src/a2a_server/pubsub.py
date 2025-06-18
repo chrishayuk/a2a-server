@@ -49,7 +49,7 @@ class EventBus:
                 # Put in the background; fire-and-forget
                 background.append(asyncio.create_task(q.put(event)))
 
-        # Detach background tasks so "Task was destroyed but is pending!" doesn’t pop
+        # Detach background tasks so "Task was destroyed but is pending!" doesn't pop
         for t in background:
             t.add_done_callback(lambda _t: _t.exception())  # surfaces any errors
 

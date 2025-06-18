@@ -11,7 +11,7 @@ Additions - May 2025
 * **Debug/metrics lockdown** - ``/debug*`` and ``/metrics`` are now protected
   with the token guard as well.
 * **Shared session-store** - single instance created via
-  :func:`a2a_server.session_store_factory.build_session_store` and injected
+  :func:`a2a_server.session_store_factory.build_session_manager` and injected
   into app state for handlers / routes.
 """
 
@@ -30,7 +30,7 @@ from a2a_server.diagnosis.flow_diagnosis import apply_flow_tracing
 from a2a_server.pubsub import EventBus
 from a2a_server.tasks.discovery import register_discovered_handlers
 from a2a_server.tasks.handlers.echo_handler import EchoHandler
-from a2a_server.tasks.task_handler import TaskHandler
+from a2a_server.tasks.handlers.task_handler import TaskHandler
 from a2a_server.tasks.task_manager import TaskManager
 from a2a_json_rpc.protocol import JSONRPCProtocol
 from a2a_server.methods import register_methods
@@ -49,8 +49,8 @@ from a2a_server.transport.ws import setup_ws
 # metrics helper (OpenTelemetry / Prometheus)
 from a2a_server import metrics as _metrics
 
-# 🔹 session-store factory
-from a2a_server.session_store_factory import build_session_store
+# 🔹 session-store factory - FIXED IMPORT
+from a2a_server.session_store_factory import build_session_manager
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -152,9 +152,12 @@ def create_app(
         sse_mod = __import__("a2a_server.transport.sse", fromlist=["setup_sse"])
         monitor_coro = apply_flow_tracing(None, http_mod, sse_mod, event_bus)
 
-    # ── 🔹 Build shared session store ──────────────────────────────────
+    # ── 🔹 Build shared session store - FIXED FUNCTION CALL ──────────────────────────────────
     sess_cfg = (handlers_config or {}).get("_session_store", {})
-    session_store = session_store = build_session_store()
+    session_store = build_session_manager(
+        sandbox_id=sess_cfg.get("sandbox_id", "a2a-server"),
+        default_ttl_hours=sess_cfg.get("default_ttl_hours", 24)
+    )
     logger.info("Session store initialised via %s", session_store.__class__.__name__)
 
     # ── Task-manager + JSON-RPC proto ──────────────────────────────────

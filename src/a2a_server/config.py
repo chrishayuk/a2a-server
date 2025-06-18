@@ -45,7 +45,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 async def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     """Return the merged configuration dictionary.
 
-    The coroutine deep‑copies :data:`DEFAULT_CONFIG`, then (optionally) loads a
+    The coroutine deep-copies :data:`DEFAULT_CONFIG`, then (optionally) loads a
     YAML file and merges it into the copy **recursively**.  Missing file →
     silently ignored; invalid YAML → raised.
     """
@@ -65,7 +65,7 @@ async def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _deep_update(target: Dict[str, Any], source: Dict[str, Any]) -> None:
-    """Recursively merge *source* into *target* (in‑place)."""
+    """Recursively merge *source* into *target* (in-place)."""
 
     for key, value in source.items():
         if (

@@ -1,4 +1,5 @@
-# a2a_server/logging.py
+# a2a_server/logging.py - Fixed version without duplicates
+
 from __future__ import annotations
 
 import logging
@@ -10,32 +11,65 @@ from pythonjsonlogger.json import JsonFormatter as _JsonFormatter  # type: ignor
 
 __all__ = ["configure_logging"]
 
-
 # ---------------------------------------------------------------------------
-# Default per-module level tweaks
+# Default per-module level tweaks - FIXED DUPLICATES
 # ---------------------------------------------------------------------------
 _DEFAULT_QUIET_MODULES: Dict[str, str] = {
-    "asyncio": "WARNING",
+    "asyncio": "ERROR",  # Changed from WARNING to ERROR to silence DEBUG messages
     "uvicorn": "WARNING",
     "uvicorn.access": "WARNING",
     "fastapi": "WARNING",
     "httpx": "ERROR",
-    # Google ADK noise
+    
+    # Google ADK noise - COMPREHENSIVE coverage
     "google": "WARNING",
-    "google.adk": "WARNING",
-    "google.adk.models": "WARNING",
+    "google.adk": "WARNING", 
+    "google.adk.models": "ERROR",  # This should catch the registry
+    "google.adk.models.registry": "ERROR",  # Explicit registry silencing
     "google.adk.models.lite_llm": "ERROR",
     "google.adk.runners": "WARNING",
-    "google.adk.sessions": "WARNING",
+    "google.adk.sessions": "WARNING", 
     "google.adk.artifacts": "WARNING",
     "google.adk.memory": "WARNING",
     "google.adk.agents": "WARNING",
     "google.genai": "WARNING",
+    
+    # ALL google_adk submodules - nuclear option
+    "google_adk": "WARNING",
+    "google_adk.google": "WARNING",
+    "google_adk.google.adk": "WARNING",
+    "google_adk.google.adk.models": "ERROR",
+    "google_adk.google.adk.models.registry": "ERROR",
+    
     # LiteLLM noise
     "LiteLLM": "ERROR",
     "litellm": "ERROR",
-    "litellm.utils": "ERROR",
+    "litellm.utils": "ERROR", 
     "litellm.llms": "ERROR",
+    
+    # CHUK modules - Comprehensive coverage
+    "chuk_sessions": "WARNING",
+    "chuk_sessions.session_manager": "WARNING",
+    "chuk_ai_session_manager": "WARNING",
+    "chuk_ai_session_manager.session_storage": "WARNING",
+    "chuk_llm": "WARNING",
+    "chuk_llm.configuration": "WARNING",
+    "chuk_llm.configuration.unified_config": "WARNING", 
+    "chuk_llm.api": "WARNING",
+    "chuk_llm.api.providers": "WARNING",
+    
+    # A2A internal modules - Comprehensive coverage  
+    "a2a_server.transport": "WARNING",
+    "a2a_server.transport.http": "WARNING",
+    "a2a_server.session_store_factory": "WARNING",
+    "a2a_server.tasks.handlers.session_aware_task_handler": "WARNING",
+    "a2a_server.tasks.handlers.chuk": "WARNING",
+    "a2a_server.tasks.handlers.chuk.chuk_agent": "WARNING",
+    "a2a_server.tasks.handlers.chuk.chuk_agent_handler": "WARNING", 
+    "a2a_server.handlers_setup": "WARNING",
+    
+    # Discovery module - SINGLE ENTRY, set to ERROR to silence DEBUG messages
+    "a2a_server.tasks.discovery": "ERROR",
 }
 
 

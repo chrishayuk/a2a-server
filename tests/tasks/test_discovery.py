@@ -10,7 +10,7 @@ from a2a_server.tasks.discovery import (
     discover_all_handlers,
     register_discovered_handlers
 )
-from a2a_server.tasks.task_handler import TaskHandler
+from a2a_server.tasks.handlers.task_handler import TaskHandler
 
 
 class MockTaskHandler(TaskHandler):

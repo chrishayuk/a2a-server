@@ -22,10 +22,10 @@ from a2a_json_rpc.spec import (
 
 @pytest_asyncio.fixture
 async def app_with_sse():
-    """FastAPI app wired with EventBus‑backed SSE endpoint for tests."""
+    """FastAPI app wired with EventBus-backed SSE endpoint for tests."""
     app = FastAPI()
     bus = EventBus()
-    # shorten server‑imposed TTL for all tests to avoid hangs
+    # shorten server-imposed TTL for all tests to avoid hangs
     sse_mod.MAX_SSE_LIFETIME = 0.5
     sse_mod.HEARTBEAT_INTERVAL = 0.1
     app.state.event_bus = bus  # type: ignore[attr-defined]
@@ -59,9 +59,9 @@ async def open_event_stream(client):
 async def test_sse_delivers_event(app_with_sse):
     app, bus, client = app_with_sse
 
-    # prepare a status‑update event
+    # prepare a status-update event
     event = TaskStatusUpdateEvent(
-        id="task‑1",
+        id="task-1",
         status=TaskStatus(state=TaskState.completed),
         final=True,
     )
@@ -74,7 +74,7 @@ async def test_sse_delivers_event(app_with_sse):
             if not line.startswith("data: "):
                 continue
             payload = json.loads(line[6:])  # strip "data: " prefix
-            assert payload["params"]["id"] == "task‑1"
+            assert payload["params"]["id"] == "task-1"
             assert payload["params"]["type"] == "status"
             break  # success
 

@@ -2,7 +2,7 @@
 import asyncio
 
 # a2a imports
-from a2a_server.tasks.task_handler import TaskHandler
+from a2a_server.tasks.handlers.task_handler import TaskHandler
 from a2a_json_rpc.spec import (
     Message, TaskStatus, TaskState, Artifact, TextPart,
     TaskStatusUpdateEvent, TaskArtifactUpdateEvent

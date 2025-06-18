@@ -1,0 +1,43 @@
+2025-06-18 18:35:23,167 DEBUG a2a_server.tasks.discovery: Created stub pkg_resources module (setuptools not installed)
+2025-06-18 18:35:23,294 INFO chuk_sessions.session_manager: SessionManager initialised for sandbox: ai-session-manager
+2025-06-18 18:35:23,294 INFO chuk_ai_session_manager.session_storage: AI Session Manager using CHUK Sessions (sandbox: ai-session-manager)
+2025-06-18 18:35:23,313 DEBUG asyncio: Using selector: KqueueSelector
+2025-06-18 18:35:23,321 INFO chuk_llm.configuration.unified_config: Loading environment from /Users/chrishay/chris-source/a2a-server/.env
+2025-06-18 18:35:23,323 INFO chuk_llm.api.providers: Generating dynamic provider functions from YAML...
+2025-06-18 18:35:23,323 INFO chuk_llm.configuration.unified_config: Found config file: /Users/chrishay/chris-source/a2a-server/chuk_llm.yaml
+2025-06-18 18:35:23,340 INFO chuk_llm.configuration.unified_config: Loaded configuration from /Users/chrishay/chris-source/a2a-server/chuk_llm.yaml
+2025-06-18 18:35:23,340 INFO chuk_llm.api.providers: Generating functions for 8 providers
+2025-06-18 18:35:23,342 INFO chuk_llm.api.providers: Generated 561 provider functions
+2025-06-18 18:35:23,342 INFO chuk_llm.api.providers: Generated 564 total functions
+2025-06-18 18:35:23,342 INFO chuk_llm.api.providers: Example functions: ask_openai_gpt4_1, stream_openai_gpt4_1, ask_openai_gpt4_1_mini, stream_openai_gpt4_1_mini, ask_openai_gpt4_1_nano
+2025-06-18 18:35:23,342 WARNING a2a_server.tasks.handlers.chuk.chuk_agent: MCP integration not fully implemented for time_agent, creating basic agent
+2025-06-18 18:35:23,343 INFO chuk_sessions.session_manager: SessionManager initialised for sandbox: a2a-handler-time_agent
+2025-06-18 18:35:23,343 INFO chuk_ai_session_manager.session_storage: AI Session Manager using CHUK Sessions (sandbox: a2a-handler-time_agent)
+2025-06-18 18:35:23,343 INFO a2a_server.session_store_factory: Setup AI session storage for sandbox: a2a-handler-time_agent
+2025-06-18 18:35:23,343 INFO a2a_server.tasks.handlers.session_aware_task_handler: Initialized modern session handler 'time_agent' (sandbox=a2a-handler-time_agent, infinite=True)
+2025-06-18 18:35:23,343 INFO a2a_server.tasks.handlers.chuk.chuk_agent: Initialized ChukAgent 'time_agent' (openai/gpt-4o-mini, streaming=True, tools=True)
+2025-06-18 18:35:23,343 INFO a2a_server.tasks.handlers.chuk.chuk_agent_handler: Loaded agent 'time_agent' for handler 'time_agent'
+2025-06-18 18:35:24,365 INFO google_adk.google.adk.models.registry: Updating LLM class for gemini-.* from <class 'google.adk.models.google_llm.Gemini'> to <class 'google.adk.models.google_llm.Gemini'>
+2025-06-18 18:35:24,365 INFO google_adk.google.adk.models.registry: Updating LLM class for projects\/.+\/locations\/.+\/endpoints\/.+ from <class 'google.adk.models.google_llm.Gemini'> to <class 'google.adk.models.google_llm.Gemini'>
+2025-06-18 18:35:24,365 INFO google_adk.google.adk.models.registry: Updating LLM class for projects\/.+\/locations\/.+\/publishers\/google\/models\/gemini.+ from <class 'google.adk.models.google_llm.Gemini'> to <class 'google.adk.models.google_llm.Gemini'>
+2025-06-18 18:35:24,365 INFO google_adk.google.adk.models.registry: Updating LLM class for gemini-.* from <class 'google.adk.models.google_llm.Gemini'> to <class 'google.adk.models.google_llm.Gemini'>
+2025-06-18 18:35:24,365 INFO google_adk.google.adk.models.registry: Updating LLM class for projects\/.+\/locations\/.+\/endpoints\/.+ from <class 'google.adk.models.google_llm.Gemini'> to <class 'google.adk.models.google_llm.Gemini'>
+2025-06-18 18:35:24,365 INFO google_adk.google.adk.models.registry: Updating LLM class for projects\/.+\/locations\/.+\/publishers\/google\/models\/gemini.+ from <class 'google.adk.models.google_llm.Gemini'> to <class 'google.adk.models.google_llm.Gemini'>
+2025-06-18 18:35:25,085 INFO a2a_server.app: Initializing A2A server components
+2025-06-18 18:35:25,086 INFO chuk_sessions.session_manager: SessionManager initialised for sandbox: a2a-server
+2025-06-18 18:35:25,086 INFO a2a_server.session_store_factory: Created SessionManager for sandbox 'a2a-server' (TTL: 24h)
+2025-06-18 18:35:25,086 INFO a2a_server.app: Session store initialised via SessionManager
+2025-06-18 18:35:25,086 INFO a2a_server.app: Registered handler time_agent (default)
+2025-06-18 18:35:25,086 INFO a2a_server.app: Registered handler pirate_agent
+2025-06-18 18:35:25,086 INFO a2a_server.app: Registered handler chef_agent
+2025-06-18 18:35:25,086 INFO a2a_server.app: Registered handler time_ticker
+2025-06-18 18:35:25,086 INFO a2a_server.app: Registered handler pirate_vision
+2025-06-18 18:35:25,086 INFO a2a_server.app: Setting up transport layers
+2025-06-18 18:35:25,094 INFO a2a_server.app: A2A server ready
+2025-06-18 18:35:25,094 INFO root: Starting A2A server on http://0.0.0.0:8000
+INFO:     Started server process [14496]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+ERROR:    [Errno 48] error while attempting to bind on address ('0.0.0.0', 8000): address already in use
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.

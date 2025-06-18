@@ -51,7 +51,7 @@ def cancel_pending_tasks(tm: TaskManager | None = None) -> asyncio.Task[Any]:  #
 
     * In modern code we rely on `TaskManager.shutdown()` which will cancel
       its TaskGroup; we also iterate any legacy sets we still find so that
-      very old plugins don’t leak tasks.
+      very old plugins don't leak tasks.
     """
 
     async def _do_cancel() -> None:  # pragma: no cover

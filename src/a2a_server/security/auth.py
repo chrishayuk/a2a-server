@@ -18,7 +18,7 @@ def require_admin_token(
     allow all traffic (so `pytest` keeps working).
     """
     expected = os.getenv("A2A_ADMIN_TOKEN")
-    if expected is None:  # dev‑mode shortcut
+    if expected is None:  # dev-mode shortcut
         return None
 
     if not creds or creds.credentials != expected:
