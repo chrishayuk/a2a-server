@@ -3,31 +3,35 @@
 Time Agent - Assistant with time and timezone capabilities via MCP
 """
 import json
+import logging
 from pathlib import Path
-from a2a_server.tasks.handlers.chuk.chuk_agent import create_agent_with_mcp
 
-# Create the configuration for the time MCP server
-config_file = "time_server_config.json"
-config = {
-    "mcpServers": {
-        "time": {
-            "command": "uvx",
-            "args": ["mcp-server-time", "--local-timezone=America/New_York"]
+logger = logging.getLogger(__name__)
+
+try:
+    from a2a_server.tasks.handlers.chuk.chuk_agent import ChukAgent
+    
+    # Create the configuration for the time MCP server
+    config_file = "time_server_config.json"
+    config = {
+        "mcpServers": {
+            "time": {
+                "command": "uvx",
+                "args": ["mcp-server-time", "--local-timezone=America/New_York"]
+            }
         }
     }
-}
 
-# Ensure config file exists
-config_path = Path(config_file)
-if not config_path.exists():
-    config_path.write_text(json.dumps(config, indent=2))
+    # Ensure config file exists
+    config_path = Path(config_file)
+    if not config_path.exists():
+        config_path.write_text(json.dumps(config, indent=2))
 
-# Time agent with native MCP integration - Fixed configuration
-time_agent = create_agent_with_mcp(
-    name="time_agent",
-    description="Assistant with time and timezone capabilities via native MCP integration",
-    instruction="""
-You are a helpful time assistant with access to time-related tools through the native tool engine.
+    # Time agent with native MCP integration
+    time_agent = ChukAgent(
+        name="time_agent",
+        description="Assistant with time and timezone capabilities via native MCP integration",
+        instruction="""You are a helpful time assistant with access to time-related tools through the native tool engine.
 
 Available capabilities:
 - Get current time in any timezone using get_current_time
@@ -48,12 +52,24 @@ When users ask about time:
 6. Help with scheduling across timezones
 7. Provide clear, helpful time-related advice
 
-Always be precise with time information and explain any calculations you perform.
-""",
-    mcp_servers=["time"],
-    mcp_config_file=config_file,
-    tool_namespace="time",  # Use a proper namespace string instead of empty string
-    provider="openai",
-    model="gpt-4o-mini",
-    streaming=True
-)
+Always be precise with time information and explain any calculations you perform.""",
+        provider="openai",
+        model="gpt-4o-mini",
+        mcp_transport="stdio",
+        mcp_config_file=config_file,
+        mcp_servers=["time"],
+        namespace="stdio"
+    )
+    
+    logger.info(f"Successfully created time_agent: {type(time_agent)}")
+    
+except Exception as e:
+    logger.error(f"Failed to create time_agent: {e}")
+    logger.exception("Full traceback:")
+    
+    # Create a minimal fallback
+    class FallbackAgent:
+        def __init__(self):
+            self.name = "time_agent_fallback"
+    
+    time_agent = FallbackAgent()

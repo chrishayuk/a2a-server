@@ -60,7 +60,7 @@ requires-dist = [
     { name = "a2a-json-rpc", specifier = ">=0.1.3" },
     { name = "aiofiles", specifier = ">=24.1.0" },
     { name = "asyncio", specifier = ">=3.4.3" },
-    { name = "chuk-ai-session-manager", specifier = ">=0.4" },
+    { name = "chuk-ai-session-manager", specifier = ">=0.5" },
     { name = "chuk-llm", specifier = ">=0.3" },
     { name = "chuk-tool-processor", specifier = ">=0.4.1" },
     { name = "fastapi", specifier = ">=0.115.12" },
@@ -373,16 +373,16 @@ wheels = [
 
 [[package]]
 name = "chuk-ai-session-manager"
-version = "0.4"
+version = "0.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "chuk-sessions" },
     { name = "chuk-tool-processor" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8c/31/04c9ad802cdb21b51a3a1ff853c20cc53b3807414dd8f7bf2918eeb77e6f/chuk_ai_session_manager-0.4.tar.gz", hash = "sha256:015af8d0a9fc7ab9c027c99f9630727850945a3b701308bed2e9083bff55193b", size = 60542 }
+sdist = { url = "https://files.pythonhosted.org/packages/c3/83/e9a5cd2d48d75493e23819d4c7d25abb71760451246c7d183b42f3a23bef/chuk_ai_session_manager-0.5.tar.gz", hash = "sha256:a1e1f5ef16f94c585c2377bc5c867b512a4b833fd7338f82144b6d18dd31eb4e", size = 83475 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/40/b0/ca3d4269e9e7c9e6541f55758a9e51407f9eac0073979c7228ec3b2b360e/chuk_ai_session_manager-0.4-py3-none-any.whl", hash = "sha256:03ff92eae9120c4bdd680723ac04714935c969776b6aaa65105e771cf333d354", size = 37148 },
+    { url = "https://files.pythonhosted.org/packages/52/7e/fdefd6fe4046fe2f2264f1e00f7995b8238fa4553c70187f4bc7af88d45e/chuk_ai_session_manager-0.5-py3-none-any.whl", hash = "sha256:bcbdc618102dd65f0207c993744c783ab42b0a20db0a433dad1b869ad66b4e9d", size = 47241 },
 ]
 
 [[package]]

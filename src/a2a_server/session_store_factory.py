@@ -15,12 +15,11 @@ import logging
 import os
 from typing import Dict, Any
 
+# sessions
 from chuk_sessions.provider_factory import factory_for_env
 from chuk_sessions.session_manager import SessionManager
 from chuk_ai_session_manager import SessionManager as AISessionManager
-from chuk_ai_session_manager.session_storage import setup_chuk_sessions_storage
-
-from a2a_server.utils.session_sandbox import server_sandbox, ai_sandbox
+from a2a_server.utils.session_sandbox import server_sandbox
 
 logger = logging.getLogger(__name__)
 

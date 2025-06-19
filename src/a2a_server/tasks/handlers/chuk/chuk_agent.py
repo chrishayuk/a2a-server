@@ -1,583 +1,601 @@
-# a2a_server/tasks/handlers/chuk/chuk_agent.py
+# a2a_server/tasks/handlers/chuk/chuk_agent.py (CORRECTED - Pure Agent)
 """
-Modern ChukAgent using chuk_llm and chuk_ai_session_manager.
-
-This is the main agent class that provides unified LLM access with
-built-in session management and conversation tracking.
+Pure ChukAgent class - framework agnostic, no A2A dependencies.
 """
-
 import asyncio
+import json
 import logging
-from typing import Dict, List, Optional, Any, AsyncGenerator, Union
+from typing import Dict, List, Any, Optional, Union
+from pathlib import Path
 
-from a2a_json_rpc.spec import (
-    Message, TaskStatus, TaskState, Artifact, TextPart,
-    TaskStatusUpdateEvent, TaskArtifactUpdateEvent
-)
+# chuk-llm imports
+from chuk_llm.llm.client import get_client
+from chuk_llm.llm.system_prompt_generator import SystemPromptGenerator
 
-# Modern CHUK imports - Fixed for compatibility
+# chuk-tool-processor imports
+from chuk_tool_processor.registry.provider import ToolRegistryProvider
+from chuk_tool_processor.mcp.setup_mcp_stdio import setup_mcp_stdio
+from chuk_tool_processor.mcp.setup_mcp_sse import setup_mcp_sse
+from chuk_tool_processor.execution.tool_executor import ToolExecutor
+from chuk_tool_processor.execution.strategies.inprocess_strategy import InProcessStrategy
+from chuk_tool_processor.models.tool_call import ToolCall
+
+# Internal session management (optional - agent can manage its own sessions)
 try:
-    from chuk_llm import get_client
-    # Try to import specific functions, fall back to client-based approach
-    try:
-        from chuk_llm import (
-            ask_openai_gpt4o_mini,
-            ask_anthropic_claude_sonnet4_20250514,
-            ask_anthropic_sonnet,
-            ask_groq_llama,
-        )
-        DIRECT_FUNCTIONS_AVAILABLE = True
-    except ImportError:
-        DIRECT_FUNCTIONS_AVAILABLE = False
-        logger = logging.getLogger(__name__)
-        logger.warning("Direct chuk_llm functions not available, using client-based approach")
+    from chuk_ai_session_manager import SessionManager as AISessionManager
+    from chuk_ai_session_manager.session_storage import setup_chuk_sessions_storage
+    HAS_SESSION_SUPPORT = True
 except ImportError:
-    # Fallback if chuk_llm is not available
-    DIRECT_FUNCTIONS_AVAILABLE = False
-    get_client = None
-    logger = logging.getLogger(__name__)
-    logger.error("chuk_llm not available, ChukAgent functionality will be limited")
-
-from a2a_server.tasks.handlers.session_aware_task_handler import SessionAwareTaskHandler
+    HAS_SESSION_SUPPORT = False
 
 logger = logging.getLogger(__name__)
 
 
-class ChukAgent(SessionAwareTaskHandler):
+class ChukAgent:
     """
-    Modern CHUK Agent with unified LLM interface and session management.
+    Pure ChukAgent - framework agnostic with MCP tool support and optional session management.
     
-    Features:
-    - Multiple LLM providers via chuk_llm
-    - Automatic conversation tracking via SessionAwareTaskHandler
-    - Infinite context with segmentation
-    - Token usage monitoring
-    - Tool integration support (future)
+    This is a pure agent class that can be used in any framework, not just A2A.
+    It handles its own sessions internally and provides simple chat/complete interfaces.
     """
-    
-    # Mark as abstract to exclude from automatic discovery
-    abstract = True
     
     def __init__(
         self,
         name: str,
-        provider: str = "openai",
-        model: str = "gpt-4o-mini",
-        instruction: str = "",
         description: str = "",
-        streaming: bool = True,
-        enable_tools: bool = False,
-        tools: Optional[List[Dict]] = None,
-        **session_kwargs
+        instruction: str = "",
+        provider: str = "openai",
+        model: Optional[str] = None,
+        use_system_prompt_generator: bool = False,
+        
+        # MCP Configuration
+        mcp_config_file: Optional[str] = None,
+        mcp_servers: Optional[List[str]] = None,
+        mcp_transport: str = "stdio",
+        mcp_sse_servers: Optional[List[Dict[str, str]]] = None,
+        namespace: str = "tools",
+        max_concurrency: int = 4,
+        tool_timeout: float = 30.0,
+        
+        # Agent-internal session management (optional)
+        enable_sessions: bool = True,
+        infinite_context: bool = True,
+        token_threshold: int = 4000,
+        max_turns_per_segment: int = 50,
+        session_ttl_hours: int = 24,
+        
+        # Other options
+        streaming: bool = False,
+        **kwargs
     ):
-        """
-        Initialize a ChukAgent.
+        """Initialize ChukAgent with optional internal session management."""
         
-        Args:
-            name: Agent name
-            provider: LLM provider (openai, anthropic, groq)
-            model: Model name (gpt-4o-mini, claude-sonnet-4, etc.)
-            instruction: System prompt/instructions
-            description: Agent description
-            streaming: Whether to use streaming responses
-            enable_tools: Whether to enable tool calling
-            tools: List of tool definitions
-            **session_kwargs: Additional session management arguments
-        """
-        # Initialize session management
-        super().__init__(name, **session_kwargs)
-        
+        # Core agent configuration
+        self.name = name
+        self.description = description
+        self.instruction = instruction or f"You are {name}, a helpful AI assistant."
         self.provider = provider
         self.model = model
-        self.instruction = instruction or f"You are {name}, a helpful AI assistant."
-        self.description = description
+        self.use_system_prompt_generator = use_system_prompt_generator
         self.streaming = streaming
-        self.enable_tools = enable_tools
-        self.tools = tools or []
         
-        # Initialize LLM client lazily
-        self._client = None
+        # MCP configuration
+        self.mcp_config_file = mcp_config_file
+        self.mcp_servers = mcp_servers or []
+        self.mcp_transport = mcp_transport
+        self.mcp_sse_servers = mcp_sse_servers or []
+        self.namespace = namespace
+        self.max_concurrency = max_concurrency
+        self.tool_timeout = tool_timeout
         
-        # Check if chuk_llm is available
-        if get_client is None:
-            logger.warning(f"ChukAgent '{name}' initialized without chuk_llm support")
+        # Tool components (lazy initialization)
+        self.registry = None
+        self.executor = None
+        self.stream_manager = None
+        self._tools_initialized = False
         
-        logger.info(
-            "Initialized ChukAgent '%s' (%s/%s, streaming=%s, tools=%s)",
-            name, provider, model, streaming, enable_tools
-        )
-    
-    @property
-    def client(self):
-        """Lazy-initialize LLM client."""
-        if self._client is None and get_client is not None:
-            try:
-                self._client = get_client(provider=self.provider, model=self.model)
-            except Exception as e:
-                logger.error(f"Failed to initialize LLM client: {e}")
-                self._client = None
-        return self._client
-    
-    def _extract_message_content(self, message: Message) -> str:
-        """Extract text content from A2A message."""
-        if not message.parts:
-            return str(message) if message else ""
-        
-        text_parts = []
-        for part in message.parts:
-            try:
-                part_data = part.model_dump(exclude_none=True) if hasattr(part, "model_dump") else {}
-                if part_data.get("type") == "text" and "text" in part_data:
-                    text_parts.append(part_data["text"])
-                elif hasattr(part, "text") and part.text:
-                    text_parts.append(part.text)
-            except Exception:
-                pass
-        
-        return " ".join(text_parts) if text_parts else str(message)
-    
-    async def _call_llm_direct(self, user_message: str) -> str:
-        """Call LLM using direct functions if available."""
-        if not DIRECT_FUNCTIONS_AVAILABLE:
-            raise NotImplementedError("Direct LLM functions not available")
-        
-        try:
-            if self.provider == "openai" and self.model == "gpt-4o-mini":
-                return await ask_openai_gpt4o_mini(user_message)
-            elif self.provider == "anthropic":
-                if "sonnet" in self.model.lower():
-                    return await ask_anthropic_sonnet(user_message)
-                elif "claude-sonnet-4" in self.model:
-                    return await ask_anthropic_claude_sonnet4_20250514(user_message)
-            elif self.provider == "groq":
-                return await ask_groq_llama(user_message)
-            else:
-                raise NotImplementedError(f"No direct function for {self.provider}/{self.model}")
-        except Exception as e:
-            logger.error(f"Direct LLM call failed: {e}")
-            raise
-    
-    async def _call_llm_client(
-        self, 
-        user_message: str, 
-        conversation_context: List[Dict[str, str]] = None
-    ) -> str:
-        """Call LLM using client-based approach."""
-        if self.client is None:
-            raise RuntimeError("LLM client not available")
-        
-        # Build messages for LLM
-        messages = [{"role": "system", "content": self.instruction}]
-        
-        # Add conversation context
-        if conversation_context:
-            messages.extend(conversation_context[-10:])  # Last 10 messages
-        
-        # Add current message if not already included
-        if not conversation_context or conversation_context[-1]["content"] != user_message:
-            messages.append({"role": "user", "content": user_message})
-        
-        try:
-            completion = await self.client.create_completion(messages=messages)
-            return self._extract_completion_response(completion)
-        except Exception as e:
-            logger.error(f"Client LLM call failed: {e}")
-            raise
-    
-    async def _call_llm(
-        self, 
-        user_message: str, 
-        conversation_context: List[Dict[str, str]] = None
-    ) -> str:
-        """Call LLM with fallback approach."""
-        # Try direct functions first (simpler, faster)
-        if DIRECT_FUNCTIONS_AVAILABLE and not conversation_context:
-            try:
-                return await self._call_llm_direct(user_message)
-            except (NotImplementedError, Exception) as e:
-                logger.debug(f"Direct LLM call failed, trying client: {e}")
-        
-        # Fall back to client-based approach
-        return await self._call_llm_client(user_message, conversation_context)
-    
-    def _extract_completion_response(self, completion) -> str:
-        """Extract response text from completion object."""
-        if isinstance(completion, dict):
-            return completion.get("response", completion.get("content", str(completion)))
-        elif hasattr(completion, 'choices') and completion.choices:
-            return completion.choices[0].message.content or ""
+        # Internal session management (agent's own sessions, not A2A's)
+        self.enable_sessions = enable_sessions and HAS_SESSION_SUPPORT
+        if self.enable_sessions:
+            self._setup_internal_sessions(
+                infinite_context=infinite_context,
+                token_threshold=token_threshold,
+                max_turns_per_segment=max_turns_per_segment,
+                session_ttl_hours=session_ttl_hours
+            )
         else:
-            return str(completion) if completion is not None else ""
-    
-    async def _call_llm_with_tools(
-        self,
-        user_message: str,
-        conversation_context: List[Dict[str, str]] = None
-    ) -> Dict[str, Any]:
-        """Call LLM with tool support (placeholder for future implementation)."""
-        # For now, just call regular LLM
-        response = await self._call_llm(user_message, conversation_context)
-        return {
-            "response": response,
-            "tool_calls": [],
-            "tool_results": []
-        }
-    
-    async def process_task(
-        self,
-        task_id: str,
-        message: Message,
-        session_id: Optional[str] = None
-    ) -> AsyncGenerator[TaskStatusUpdateEvent | TaskArtifactUpdateEvent, None]:
-        """Process a task with modern CHUK integration."""
-        # Check if LLM is available
-        if get_client is None and not DIRECT_FUNCTIONS_AVAILABLE:
-            yield TaskStatusUpdateEvent(
-                id=task_id,
-                status=TaskStatus(state=TaskState.failed),
-                final=True
+            self._ai_sessions = {}
+        
+        logger.info(f"Initialized ChukAgent '{name}' with {mcp_transport} MCP transport")
+
+    def _setup_internal_sessions(
+        self, 
+        infinite_context: bool,
+        token_threshold: int, 
+        max_turns_per_segment: int,
+        session_ttl_hours: int
+    ):
+        """Setup agent's internal session management."""
+        try:
+            # Setup storage for this agent's sessions
+            sandbox_id = f"chuk-agent-{self.name.lower().replace('_', '-')}"
+            setup_chuk_sessions_storage(
+                sandbox_id=sandbox_id,
+                default_ttl_hours=session_ttl_hours
             )
-            error_artifact = Artifact(
-                name="error",
-                parts=[TextPart(type="text", text="LLM client not available - chuk_llm not properly installed")],
-                index=0
-            )
-            yield TaskArtifactUpdateEvent(id=task_id, artifact=error_artifact)
+            
+            self.session_config = {
+                "infinite_context": infinite_context,
+                "token_threshold": token_threshold, 
+                "max_turns_per_segment": max_turns_per_segment
+            }
+            
+            # Track agent's own AI session managers
+            self._ai_sessions: Dict[str, AISessionManager] = {}
+            
+            logger.debug(f"Agent {self.name} session management enabled (sandbox: {sandbox_id})")
+            
+        except Exception as e:
+            logger.warning(f"Failed to setup sessions for agent {self.name}: {e}")
+            self.enable_sessions = False
+            self._ai_sessions = {}
+
+    def _get_ai_session(self, session_id: Optional[str]) -> Optional[AISessionManager]:
+        """Get or create AI session manager for internal session tracking."""
+        if not self.enable_sessions or not session_id:
+            return None
+            
+        if session_id not in self._ai_sessions:
+            try:
+                self._ai_sessions[session_id] = AISessionManager(**self.session_config)
+            except Exception as e:
+                logger.error(f"Failed to create AI session {session_id}: {e}")
+                return None
+                
+        return self._ai_sessions[session_id]
+
+    def get_system_prompt(self) -> str:
+        """Get system prompt, optionally using chuk_llm's generator."""
+        if self.use_system_prompt_generator:
+            generator = SystemPromptGenerator()
+            base_prompt = generator.generate_prompt({})
+            return f"{base_prompt}\n\n{self.instruction}"
+        else:
+            return self.instruction
+
+    async def get_llm_client(self):
+        """Get LLM client for this agent."""
+        return get_client(provider=self.provider, model=self.model)
+
+    def _extract_response_content(self, response) -> str:
+        """Extract content from chuk_llm response."""
+        if isinstance(response, dict):
+            return response.get("response", response.get("content", str(response)))
+        elif hasattr(response, 'content'):
+            return response.content or ""
+        elif hasattr(response, 'response'):
+            return response.response or ""
+        else:
+            return str(response) if response is not None else ""
+
+    async def initialize_tools(self):
+        """Initialize MCP connection and tools."""
+        if self._tools_initialized:
             return
-        
-        # Extract user message
-        user_message = self._extract_message_content(message)
-        
-        # Yield working status
-        yield TaskStatusUpdateEvent(
-            id=task_id,
-            status=TaskStatus(state=TaskState.working),
-            final=False
-        )
-        
+            
         try:
-            # Add user message to conversation
-            await self.add_user_message(session_id, user_message)
-            
-            # Get conversation context
-            context = await self.get_conversation_context(session_id)
-            
-            # Call LLM
-            if self.enable_tools and self.tools:
-                result = await self._call_llm_with_tools(user_message, context)
-                response = result["response"]
-                tool_calls = result.get("tool_calls", [])
+            if self.mcp_transport == "stdio" and self.mcp_servers and self.mcp_config_file:
+                server_names = {i: name for i, name in enumerate(self.mcp_servers)}
                 
-                # Handle tool calls if present (future implementation)
-                if tool_calls:
-                    for i, tool_call in enumerate(tool_calls):
-                        tool_artifact = Artifact(
-                            name=f"tool_call_{i}",
-                            parts=[TextPart(
-                                type="text", 
-                                text=f"Tool: {tool_call.get('name', 'unknown')}"
-                            )],
-                            index=i + 1
-                        )
-                        yield TaskArtifactUpdateEvent(id=task_id, artifact=tool_artifact)
+                logger.info(f"Setting up stdio MCP with servers: {self.mcp_servers}")
+                _, self.stream_manager = await setup_mcp_stdio(
+                    config_file=self.mcp_config_file,
+                    servers=self.mcp_servers,
+                    server_names=server_names,
+                    namespace=self.namespace,
+                )
+                
+            elif self.mcp_transport == "sse" and self.mcp_sse_servers:
+                server_names = {i: server["name"] for i, server in enumerate(self.mcp_sse_servers)}
+                
+                logger.info(f"Setting up SSE MCP with servers: {[s['name'] for s in self.mcp_sse_servers]}")
+                _, self.stream_manager = await setup_mcp_sse(
+                    servers=self.mcp_sse_servers,
+                    server_names=server_names,
+                    namespace=self.namespace,
+                )
+            
+            if self.stream_manager:
+                self.registry = await ToolRegistryProvider.get_registry()
+                
+                strategy = InProcessStrategy(
+                    self.registry,
+                    default_timeout=self.tool_timeout,
+                    max_concurrency=self.max_concurrency,
+                )
+                self.executor = ToolExecutor(self.registry, strategy=strategy)
+                
+                self._tools_initialized = True
+                logger.info(f"MCP initialized successfully with namespace '{self.namespace}'")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize MCP: {e}")
+            self._tools_initialized = False
+
+    async def get_available_tools(self) -> List[str]:
+        """Get list of available tools."""
+        if not self.registry:
+            return []
+            
+        try:
+            tools = await self.registry.list_tools()
+            return [name for ns, name in tools if ns == self.namespace]
+        except Exception as e:
+            logger.error(f"Error getting tools: {e}")
+            return []
+
+    async def execute_tools(self, tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Execute tool calls using actual MCP parameters (FIXED)."""
+        if not self.executor:
+            return [{"error": "Tool executor not initialized"} for _ in tool_calls]
+        
+        # Convert to ToolCall objects with proper argument handling
+        calls = []
+        for tc in tool_calls:
+            # Handle both dict and object formats
+            if isinstance(tc, dict):
+                func = tc.get("function", {})
+                tool_call_id = tc.get("id", "unknown")
             else:
-                response = await self._call_llm(user_message, context)
+                func = getattr(tc, 'function', {})
+                tool_call_id = getattr(tc, 'id', 'unknown')
             
-            # Add AI response to conversation
-            await self.add_ai_response(session_id, response, self.model, self.provider)
+            tool_name = func.get("name", "") if isinstance(func, dict) else getattr(func, 'name', '')
             
-            # Emit response artifact
-            response_artifact = Artifact(
-                name=f"{self.name}_response",
-                parts=[TextPart(type="text", text=response)],
-                index=0
-            )
-            yield TaskArtifactUpdateEvent(id=task_id, artifact=response_artifact)
+            # Remove namespace prefix if present
+            if tool_name.startswith(f"{self.namespace}."):
+                tool_name = tool_name[len(f"{self.namespace}."):]
             
-            # Yield completion
-            yield TaskStatusUpdateEvent(
-                id=task_id,
-                status=TaskStatus(state=TaskState.completed),
-                final=True
-            )
+            # Parse arguments - NO MORE GENERIC WRAPPER
+            args = func.get("arguments", {}) if isinstance(func, dict) else getattr(func, 'arguments', {})
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse tool arguments: {args}, error: {e}")
+                    args = {}
             
-        except Exception as e:
-            logger.error("Error processing task %s: %s", task_id, e)
+            # Create ToolCall with actual arguments (not wrapped)
+            calls.append(ToolCall(
+                tool=f"{self.namespace}.{tool_name}",
+                arguments=args  # Use actual arguments, not {"query": args}
+            ))
             
-            # Emit error artifact
-            error_artifact = Artifact(
-                name="error",
-                parts=[TextPart(type="text", text=f"Error: {str(e)}")],
-                index=0
-            )
-            yield TaskArtifactUpdateEvent(id=task_id, artifact=error_artifact)
-            
-            # Yield failed status
-            yield TaskStatusUpdateEvent(
-                id=task_id,
-                status=TaskStatus(state=TaskState.failed),
-                final=True
-            )
-
-
-# Factory functions for common agent configurations
-def create_openai_agent(
-    name: str,
-    model: str = "gpt-4o-mini",
-    instruction: str = "",
-    **kwargs
-) -> ChukAgent:
-    """Create OpenAI-powered agent."""
-    return ChukAgent(
-        name=name,
-        provider="openai",
-        model=model,
-        instruction=instruction,
-        **kwargs
-    )
-
-def create_anthropic_agent(
-    name: str,
-    model: str = "claude-sonnet-4",
-    instruction: str = "",
-    **kwargs
-) -> ChukAgent:
-    """Create Anthropic-powered agent."""
-    return ChukAgent(
-        name=name,
-        provider="anthropic", 
-        model=model,
-        instruction=instruction,
-        **kwargs
-    )
-
-def create_groq_agent(
-    name: str,
-    model: str = "llama-3",
-    instruction: str = "",
-    **kwargs
-) -> ChukAgent:
-    """Create Groq-powered agent."""
-    return ChukAgent(
-        name=name,
-        provider="groq",
-        model=model,
-        instruction=instruction,
-        **kwargs
-    )
-
-# Enhanced create_agent_with_mcp function
-# Add this to replace the placeholder at the bottom of chuk_agent.py
-
-def create_agent_with_mcp(
-    name: str,
-    description: str = "",
-    instruction: str = "",
-    mcp_servers: list = None,
-    mcp_config_file: str = None,
-    tool_namespace: str = "",
-    provider: str = "openai",
-    model: str = "gpt-4o-mini",
-    streaming: bool = True,
-    **kwargs
-) -> ChukAgent:
-    """
-    Create a ChukAgent with MCP (Model Context Protocol) tool support.
-    
-    Args:
-        name: Agent name
-        description: Agent description
-        instruction: System prompt/instructions
-        mcp_servers: List of MCP server names to connect to
-        mcp_config_file: Path to MCP configuration file
-        tool_namespace: Namespace for MCP tools
-        provider: LLM provider
-        model: LLM model
-        streaming: Enable streaming responses
-        **kwargs: Additional arguments
+            logger.debug(f"Executing tool {tool_name} with args: {args}")
         
-    Returns:
-        ChukAgent instance with MCP tool support
-    """
-    
-    # Try to set up MCP integration
-    mcp_tools = []
-    mcp_initialized = False
-    
-    if mcp_servers and mcp_config_file:
         try:
-            # Try to import MCP setup functionality
-            from chuk_tool_processor.mcp.setup_mcp_sse import setup_mcp_sse
-            import json
-            from pathlib import Path
+            results = await self.executor.execute(calls)
             
-            # Load MCP configuration
-            config_path = Path(mcp_config_file)
-            if config_path.exists():
-                with open(config_path) as f:
-                    mcp_config = json.load(f)
+            # Format results
+            formatted_results = []
+            for tc, result in zip(tool_calls, results):
+                # Handle both dict and object formats for tool_call_id
+                if isinstance(tc, dict):
+                    tool_call_id = tc.get("id", "unknown")
+                else:
+                    tool_call_id = getattr(tc, 'id', 'unknown')
                 
-                # Extract server configurations
-                servers = []
-                server_names = {}
-                
-                for i, server_name in enumerate(mcp_servers):
-                    if server_name in mcp_config.get("mcpServers", {}):
-                        server_config = mcp_config["mcpServers"][server_name]
-                        servers.append({
-                            "name": server_name,
-                            "url": f"stdio://{server_config['command']}",  # Convert to URL format
-                            "transport": "stdio",
-                            "command": server_config["command"],
-                            "args": server_config.get("args", [])
-                        })
-                        server_names[i] = server_name
-                
-                if servers:
-                    logger.info(f"Setting up MCP integration for {name} with servers: {mcp_servers}")
+                if result.error:
+                    formatted_results.append({
+                        "tool_call_id": tool_call_id,
+                        "content": f"Error: {result.error}"
+                    })
+                else:
+                    content = result.result
+                    if isinstance(content, (dict, list)):
+                        content = json.dumps(content, indent=2)
+                    elif content is None:
+                        content = "No result"
                     
-                    # Initialize MCP connection
-                    # Note: This is a simplified example - actual implementation would need
-                    # proper async initialization and error handling
-                    
-                    # For now, create tool definitions based on known MCP server capabilities
-                    if "time" in mcp_servers:
-                        mcp_tools.extend([
-                            {
-                                "type": "function",
-                                "function": {
-                                    "name": "get_current_time",
-                                    "description": "Get current time in specified timezone",
-                                    "parameters": {
-                                        "type": "object",
-                                        "properties": {
-                                            "timezone": {
-                                                "type": "string",
-                                                "description": "IANA timezone name (e.g., America/New_York)"
-                                            }
-                                        },
-                                        "required": ["timezone"]
-                                    }
-                                }
-                            },
-                            {
-                                "type": "function", 
-                                "function": {
-                                    "name": "convert_time",
-                                    "description": "Convert time between timezones",
-                                    "parameters": {
-                                        "type": "object",
-                                        "properties": {
-                                            "time": {"type": "string", "description": "Time to convert"},
-                                            "from_tz": {"type": "string", "description": "Source timezone"},
-                                            "to_tz": {"type": "string", "description": "Target timezone"}
-                                        },
-                                        "required": ["time", "from_tz", "to_tz"]
-                                    }
-                                }
-                            }
-                        ])
-                    
-                    if "weather" in mcp_servers:
-                        mcp_tools.extend([
-                            {
-                                "type": "function",
-                                "function": {
-                                    "name": "get_weather",
-                                    "description": "Get current weather for a location",
-                                    "parameters": {
-                                        "type": "object",
-                                        "properties": {
-                                            "location": {
-                                                "type": "string",
-                                                "description": "City name or location"
-                                            }
-                                        },
-                                        "required": ["location"]
-                                    }
-                                }
-                            },
-                            {
-                                "type": "function",
-                                "function": {
-                                    "name": "get_forecast",
-                                    "description": "Get weather forecast for a location",
-                                    "parameters": {
-                                        "type": "object",
-                                        "properties": {
-                                            "location": {"type": "string", "description": "City name"},
-                                            "days": {"type": "integer", "description": "Number of days", "default": 5}
-                                        },
-                                        "required": ["location"]
-                                    }
-                                }
-                            }
-                        ])
-                    
-                    mcp_initialized = True
-                    logger.info(f"MCP integration initialized for {name} with {len(mcp_tools)} tools")
-                    
-        except ImportError as e:
-            logger.warning(f"MCP dependencies not available for {name}: {e}")
+                    formatted_results.append({
+                        "tool_call_id": tool_call_id, 
+                        "content": str(content)
+                    })
+            
+            logger.info(f"Tool execution completed: {len(formatted_results)} results")
+            return formatted_results
+            
         except Exception as e:
-            logger.error(f"Failed to initialize MCP for {name}: {e}")
-    
-    # Create agent with or without MCP tools
-    if mcp_initialized and mcp_tools:
-        # Enhanced instruction with tool awareness
-        enhanced_instruction = instruction or f"""
-You are {name}, a helpful AI assistant with access to specialized tools.
+            logger.error(f"Tool execution failed: {e}")
+            return [{"error": str(e)} for _ in tool_calls]
 
-{description}
+    async def generate_tools_schema(self) -> List[Dict[str, Any]]:
+        """Generate OpenAI-style tool schema using actual MCP tool definitions."""
+        if not self.registry:
+            return []
+        
+        tools = []
+        try:
+            # Get all tools with their actual schemas
+            tool_list = await self.registry.list_tools()
+            
+            for namespace, tool_name in tool_list:
+                if namespace != self.namespace:
+                    continue
+                    
+                try:
+                    # Get the actual tool definition from registry
+                    tool_def = await self.registry.get_tool(namespace, tool_name)
+                    
+                    if tool_def and hasattr(tool_def, 'input_schema'):
+                        # Use the actual MCP schema
+                        schema = tool_def.input_schema
+                        
+                        # Convert MCP schema to OpenAI format
+                        openai_tool = {
+                            "type": "function",
+                            "function": {
+                                "name": tool_name,
+                                "description": getattr(tool_def, 'description', f"Execute {tool_name} tool"),
+                                "parameters": schema if isinstance(schema, dict) else schema.model_dump() if hasattr(schema, 'model_dump') else {
+                                    "type": "object",
+                                    "properties": {},
+                                    "required": []
+                                }
+                            }
+                        }
+                        
+                        tools.append(openai_tool)
+                        logger.debug(f"Added tool schema for {tool_name}: {openai_tool}")
+                        
+                    else:
+                        logger.warning(f"No schema found for tool {namespace}.{tool_name}")
+                        
+                except Exception as e:
+                    logger.error(f"Error getting schema for tool {namespace}.{tool_name}: {e}")
+                    
+            logger.info(f"Generated {len(tools)} tool schemas")
+            return tools
+            
+        except Exception as e:
+            logger.error(f"Error generating tool schemas: {e}")
+            return []
 
-You have access to the following tools:
-{', '.join([tool['function']['name'] for tool in mcp_tools])}
+    async def debug_tools(self) -> Dict[str, Any]:
+        """Debug method to inspect tool configuration."""
+        debug_info = {
+            "registry_available": self.registry is not None,
+            "executor_available": self.executor is not None,
+            "tools_initialized": self._tools_initialized,
+            "namespace": self.namespace,
+            "available_tools": [],
+            "tool_schemas": []
+        }
+        
+        if self.registry:
+            try:
+                tool_list = await self.registry.list_tools()
+                debug_info["available_tools"] = [(ns, name) for ns, name in tool_list if ns == self.namespace]
+                
+                # Get schemas for debugging
+                for namespace, tool_name in tool_list:
+                    if namespace == self.namespace:
+                        try:
+                            tool_def = await self.registry.get_tool(namespace, tool_name)
+                            if tool_def:
+                                schema_info = {
+                                    "name": tool_name,
+                                    "description": getattr(tool_def, 'description', 'No description'),
+                                    "input_schema": getattr(tool_def, 'input_schema', 'No schema')
+                                }
+                                debug_info["tool_schemas"].append(schema_info)
+                        except Exception as e:
+                            debug_info["tool_schemas"].append({
+                                "name": tool_name,
+                                "error": str(e)
+                            })
+            except Exception as e:
+                debug_info["registry_error"] = str(e)
+        
+        return debug_info
 
-When users ask questions that can be answered with your tools, always use them to provide accurate, real-time information.
-"""
+    async def complete(
+        self,
+        messages: List[Dict[str, Any]],
+        use_tools: bool = True,
+        session_id: Optional[str] = None,
+        **llm_kwargs
+    ) -> Dict[str, Any]:
+        """Complete a conversation with optional tool usage and session tracking."""
+        await self.initialize_tools()
         
-        agent = ChukAgent(
-            name=name,
-            provider=provider,
-            model=model,
-            instruction=enhanced_instruction,
-            description=description,
-            streaming=streaming,
-            enable_tools=True,
-            tools=mcp_tools,
-            **kwargs
-        )
+        # Add session context if available and enabled
+        ai_session = self._get_ai_session(session_id) if session_id else None
+        if ai_session:
+            try:
+                # Get recent conversation context
+                context = await ai_session.get_conversation()
+                if context:
+                    # Insert context before the current user message
+                    system_msg = messages[0] if messages and messages[0]["role"] == "system" else None
+                    user_messages = messages[1:] if system_msg else messages
+                    
+                    enhanced_messages = []
+                    if system_msg:
+                        enhanced_messages.append(system_msg)
+                    
+                    # Add recent context (last 5 exchanges)
+                    enhanced_messages.extend(context[-5:])
+                    enhanced_messages.extend(user_messages)
+                    messages = enhanced_messages
+            except Exception as e:
+                logger.warning(f"Failed to get session context: {e}")
         
-        logger.info(f"Created MCP-enabled agent '{name}' with {len(mcp_tools)} tools")
-        return agent
-    
-    else:
-        # Fallback to basic agent with helpful instruction about missing tools
-        fallback_instruction = instruction or f"""
-You are {name}, a helpful AI assistant. {description}
+        llm_client = await self.get_llm_client()
+        
+        # Get tools if requested and available
+        tools = None
+        if use_tools:
+            tools = await self.generate_tools_schema()
+            if not tools:
+                use_tools = False
+        
+        # Track user message in session
+        if ai_session:
+            try:
+                user_message = None
+                for msg in reversed(messages):
+                    if msg["role"] == "user":
+                        user_message = msg["content"]
+                        break
+                if user_message:
+                    await ai_session.user_says(user_message)
+            except Exception as e:
+                logger.warning(f"Failed to track user message: {e}")
+        
+        # Call LLM
+        try:
+            if use_tools and tools:
+                response = await llm_client.create_completion(
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    **llm_kwargs
+                )
+                
+                # Handle both dict and object responses
+                tool_calls = None
+                content = None
+                
+                if isinstance(response, dict):
+                    tool_calls = response.get('tool_calls', [])
+                    content = response.get('response') or response.get('content')
+                else:
+                    tool_calls = getattr(response, 'tool_calls', [])
+                    content = getattr(response, 'content', None)
+                
+                # Check for tool calls
+                if tool_calls:
+                    logger.info(f"Processing {len(tool_calls)} tool calls")
+                    
+                    # Execute tools
+                    tool_results = await self.execute_tools(tool_calls)
+                    
+                    # Add tool results to conversation and get final response
+                    enhanced_messages = messages + [
+                        {
+                            "role": "assistant",
+                            "content": content or "I'll use my tools to help you.",
+                            "tool_calls": tool_calls
+                        }
+                    ]
+                    
+                    for result in tool_results:
+                        enhanced_messages.append({
+                            "role": "tool",
+                            "tool_call_id": result.get("tool_call_id", "unknown"),
+                            "content": result.get("content", "No result")
+                        })
+                    
+                    # Get final response
+                    final_response = await llm_client.create_completion(messages=enhanced_messages, **llm_kwargs)
+                    final_content = self._extract_response_content(final_response)
+                    
+                    # Track AI response in session
+                    if ai_session and final_content:
+                        try:
+                            await ai_session.ai_responds(final_content, model=self.model, provider=self.provider)
+                        except Exception as e:
+                            logger.warning(f"Failed to track AI response: {e}")
+                    
+                    return {
+                        "content": final_content,
+                        "tool_calls": tool_calls,
+                        "tool_results": tool_results,
+                        "usage": getattr(final_response, 'usage', None) if hasattr(final_response, 'usage') else response.get('usage')
+                    }
+                else:
+                    # No tool calls
+                    final_content = content or self._extract_response_content(response)
+                    
+                    # Track AI response in session
+                    if ai_session and final_content:
+                        try:
+                            await ai_session.ai_responds(final_content, model=self.model, provider=self.provider)
+                        except Exception as e:
+                            logger.warning(f"Failed to track AI response: {e}")
+                    
+                    return {
+                        "content": final_content,
+                        "tool_calls": [],
+                        "tool_results": [],
+                        "usage": getattr(response, 'usage', None) if hasattr(response, 'usage') else response.get('usage')
+                    }
+            else:
+                # No tools, simple completion
+                response = await llm_client.create_completion(messages=messages, **llm_kwargs)
+                final_content = self._extract_response_content(response)
+                
+                # Track AI response in session
+                if ai_session and final_content:
+                    try:
+                        await ai_session.ai_responds(final_content, model=self.model, provider=self.provider)
+                    except Exception as e:
+                        logger.warning(f"Failed to track AI response: {e}")
+                
+                return {
+                    "content": final_content,
+                    "tool_calls": [],
+                    "tool_results": [],
+                    "usage": getattr(response, 'usage', None) if hasattr(response, 'usage') else response.get('usage')
+                }
+        except Exception as e:
+            logger.error(f"Error in LLM completion: {e}")
+            raise
 
-Note: Advanced tool capabilities are currently unavailable, but you can still provide helpful information and guidance on {', '.join(mcp_servers or ['general topics'])}.
-"""
+    async def chat(self, user_message: str, session_id: Optional[str] = None, **kwargs) -> str:
+        """Simple chat interface with session support."""
+        messages = [
+            {"role": "system", "content": self.get_system_prompt()},
+            {"role": "user", "content": user_message}
+        ]
         
-        agent = ChukAgent(
-            name=name,
-            provider=provider,
-            model=model,
-            instruction=fallback_instruction,
-            description=description,
-            streaming=streaming,
-            enable_tools=False,
-            **kwargs
-        )
-        
-        logger.warning(f"Created basic agent '{name}' - MCP tools not available")
-        return agent
-    
-# Export main class and factory functions
-__all__ = [
-    "ChukAgent",
-    "create_openai_agent",
-    "create_anthropic_agent", 
-    "create_groq_agent",
-    "create_agent_with_mcp"
-]
+        result = await self.complete(messages, session_id=session_id, **kwargs)
+        return result["content"] or "No response generated"
+
+    async def get_conversation_history(self, session_id: Optional[str] = None) -> List[Dict[str, str]]:
+        """Get conversation history for a session."""
+        ai_session = self._get_ai_session(session_id) if session_id else None
+        if not ai_session:
+            return []
+            
+        try:
+            return await ai_session.get_conversation()
+        except Exception as e:
+            logger.error(f"Failed to get conversation history: {e}")
+            return []
+
+    async def get_session_stats(self, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """Get session statistics."""
+        ai_session = self._get_ai_session(session_id) if session_id else None
+        if not ai_session:
+            return {"total_tokens": 0, "estimated_cost": 0}
+            
+        try:
+            return ai_session.get_stats()
+        except Exception as e:
+            logger.error(f"Failed to get session stats: {e}")
+            return {"total_tokens": 0, "estimated_cost": 0}
+
+    async def shutdown(self):
+        """Cleanup MCP connections."""
+        if self.stream_manager:
+            try:
+                await self.stream_manager.close()
+                logger.info(f"Closed MCP stream manager for {self.name}")
+            except Exception as e:
+                logger.warning(f"Error closing stream manager: {e}")
+
+
+# Export the main class
+__all__ = ["ChukAgent"]

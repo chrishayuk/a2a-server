@@ -26,7 +26,7 @@ dependencies = [
   "aiofiles>=24.1.0",
   "chuk-llm>=0.3",
   "chuk-tool-processor>=0.4.1",
-  "chuk-ai-session-manager>=0.4",
+  "chuk-ai-session-manager>=0.5",
 ]
 
 [project.optional-dependencies]

@@ -1,21 +1,21 @@
-# a2a_server/sample_agents/weather_agent.py - Updated with correct commands
+# a2a_server/sample_agents/weather_agent.py
 """
 Weather Agent - Assistant with weather capabilities via MCP
 """
 import json
 import logging
 from pathlib import Path
-from a2a_server.tasks.handlers.chuk.chuk_agent import create_agent_with_mcp
+from a2a_server.tasks.handlers.chuk.chuk_agent import ChukAgent
 
 logger = logging.getLogger(__name__)
 
-# Create the configuration for the weather MCP server - FIXED
+# Create the configuration for the weather MCP server
 config_file = "weather_server_config.json"
 config = {
     "mcpServers": {
         "weather": {
-            "command": "uvx",  # Using uvx (which you already have)
-            "args": ["mcp-server-weather"]  # Correct package name
+            "command": "uvx",
+            "args": ["mcp-server-weather"]
         }
     }
 }
@@ -27,11 +27,10 @@ logger.info(f"Updated weather MCP config: {config_file}")
 
 try:
     # Weather agent with native MCP integration
-    weather_agent = create_agent_with_mcp(
+    weather_agent = ChukAgent(
         name="weather_agent",
         description="Assistant with weather forecasting capabilities via native MCP integration",
-        instruction="""
-You are a helpful weather assistant with access to real weather data through MCP tools.
+        instruction="""You are a helpful weather assistant with access to real weather data through MCP tools.
 
 🌦️ AVAILABLE TOOLS:
 - get_weather(location: str) - Get current weather for any city/location
@@ -50,15 +49,13 @@ Examples:
 - "Forecast for New York" → get_forecast("New York", 5)
 - "Weather yesterday in Paris" → get_historical_weather("Paris", "2025-06-17")
 
-IMPORTANT: Always use your tools to get real data. Never give generic responses!
-""",
-        mcp_servers=["weather"],
-        mcp_config_file=config_file,
-        tool_namespace="weather",
+IMPORTANT: Always use your tools to get real data. Never give generic responses!""",
         provider="openai", 
         model="gpt-4o-mini",
-        streaming=True,
-        enable_tools=True
+        mcp_transport="stdio",
+        mcp_config_file=config_file,
+        mcp_servers=["weather"],
+        namespace="stdio"
     )
     logger.info("Weather agent created successfully with MCP tools")
     
@@ -67,28 +64,21 @@ except Exception as e:
     logger.error("Make sure to install: uvx install mcp-server-weather")
     
     # Fallback agent with clear error message
-    from a2a_server.tasks.handlers.chuk.chuk_agent import ChukAgent
-    
     weather_agent = ChukAgent(
         name="weather_agent",
         description="Weather assistant (tools unavailable - check setup)",
-        instruction="""
-I'm a weather assistant, but my weather data tools are currently unavailable.
-
-To get real weather data, an administrator needs to:
-1. Install uvx: pip install uvx
-2. Install weather server: uvx install mcp-server-weather  
-3. Restart the A2A server
+        instruction="""I'm a weather assistant, but my weather data tools are currently unavailable.
 
 In the meantime, I recommend checking:
 - weather.com
 - weather.gov
 - Your local weather app
 
-I apologize for the inconvenience!
-""",
+I apologize for the inconvenience!""",
         provider="openai",
-        model="gpt-4o-mini", 
-        streaming=True
+        model="gpt-4o-mini",
+        mcp_transport="stdio",
+        mcp_servers=[],  # No MCP servers for fallback
+        namespace="stdio"
     )
     logger.warning("Created fallback weather agent - MCP tools unavailable")
