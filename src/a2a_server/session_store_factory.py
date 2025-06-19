@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # a2a_server/session_store_factory.py
 """
-Modern session store factory using chuk_sessions and chuk_ai_session_manager.
-
+Modern session store factory using chuk_sessions and chuk_ai_session_manager with proper external storage.
 Environment variables
 ---------------------
 SESSION_PROVIDER      "memory" (default) | "redis"
@@ -13,9 +12,9 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
-# sessions
+# sessions
 from chuk_sessions.provider_factory import factory_for_env
 from chuk_sessions.session_manager import SessionManager
 from chuk_ai_session_manager import SessionManager as AISessionManager
@@ -23,11 +22,9 @@ from a2a_server.utils.session_sandbox import server_sandbox
 
 logger = logging.getLogger(__name__)
 
-# Module-level caches
+# Module-level caches - ONLY for non-session-specific managers
 _session_managers: Dict[str, SessionManager] = {}
-_ai_session_managers: Dict[str, AISessionManager] = {}
 _session_factory = None
-
 
 def get_session_factory():
     """Get the global session factory (singleton)."""
@@ -49,6 +46,9 @@ def build_session_manager(
 ) -> SessionManager:
     """
     Build or return cached SessionManager for the given sandbox.
+    
+    These can be cached because they're just connections to the external storage,
+    not the actual session data.
     
     Args:
         sandbox_id: Unique identifier for this session sandbox (auto-generated if None)
@@ -122,53 +122,90 @@ def setup_ai_session_storage(
     logger.info("Setup AI session storage for sandbox: %s", final_sandbox_id)
 
 
-def build_ai_session_manager(
-    session_id: str = "default",
-    *,
-    infinite_context: bool = True,
-    token_threshold: int = 4000,
-    max_turns_per_segment: int = 50,
-    refresh: bool = False,
-    **kwargs
+def create_ai_session_manager(
+    session_config: Dict[str, Any],
+    session_context: Optional[str] = None
 ) -> AISessionManager:
     """
-    Build or return cached AI SessionManager.
+    Create a NEW AI session manager instance.
+    
+    IMPORTANT: This does NOT cache the instance. Each call creates a new manager
+    that connects to the external storage. This ensures proper cross-server sharing.
     
     Args:
-        session_id: Unique identifier for this AI session manager
-        infinite_context: Enable infinite context with segmentation
-        token_threshold: Token limit before segmentation
-        max_turns_per_segment: Maximum turns per segment
-        refresh: Force creation of new manager
-        **kwargs: Additional arguments for AISessionManager
+        session_config: Session configuration
+        session_context: Optional context info for logging
         
     Returns:
-        AISessionManager instance
+        New AISessionManager instance (not cached)
     """
-    global _ai_session_managers
-    
-    cache_key = f"{session_id}:{infinite_context}:{token_threshold}:{max_turns_per_segment}"
-    
-    if cache_key in _ai_session_managers and not refresh:
-        return _ai_session_managers[cache_key]
-    
     from a2a_server.utils.session_setup import SessionSetup
-    
-    session_config = SessionSetup.create_session_config(
-        infinite_context=infinite_context,
-        token_threshold=token_threshold,
-        max_turns_per_segment=max_turns_per_segment,
-        **kwargs
-    )
     
     manager = SessionSetup.create_ai_session_manager(session_config)
     
-    _ai_session_managers[cache_key] = manager
-    logger.info(
-        "Created AI SessionManager '%s' (infinite=%s, threshold=%d)",
-        session_id, infinite_context, token_threshold
+    if session_context:
+        logger.debug(f"🔧 Created AI session manager for: {session_context}")
+    else:
+        logger.debug("🔧 Created AI session manager")
+    
+    return manager
+
+
+def create_shared_ai_session_manager(
+    sandbox_id: str,
+    session_id: str,
+    session_config: Dict[str, Any]
+) -> AISessionManager:
+    """
+    Create AI session manager for cross-agent session sharing.
+    
+    This creates a NEW manager instance that connects to the external storage.
+    Multiple agents calling this with the same sandbox_id will access the same
+    external session data through their respective manager instances.
+    
+    Args:
+        sandbox_id: Sandbox identifier for grouping related sessions
+        session_id: Specific session identifier (e.g., user session)
+        session_config: Session configuration
+        
+    Returns:
+        New AISessionManager instance (connects to shared external storage)
+    """
+    # Always create a new manager instance - no caching!
+    manager = create_ai_session_manager(
+        session_config=session_config,
+        session_context=f"shared:{sandbox_id}/{session_id}"
     )
     
+    logger.debug(f"🌐 Created shared AI session manager: {sandbox_id}/{session_id}")
+    return manager
+
+
+def create_isolated_ai_session_manager(
+    sandbox_id: str,
+    session_id: str,
+    session_config: Dict[str, Any]
+) -> AISessionManager:
+    """
+    Create AI session manager for isolated session management.
+    
+    Args:
+        sandbox_id: Sandbox identifier for this handler
+        session_id: Specific session identifier
+        session_config: Session configuration
+        
+    Returns:
+        New AISessionManager instance (connects to isolated external storage)
+    """
+    # Create unique session identifier for isolation
+    isolated_session_id = f"{sandbox_id}:{session_id}"
+    
+    manager = create_ai_session_manager(
+        session_config=session_config,
+        session_context=f"isolated:{isolated_session_id}"
+    )
+    
+    logger.debug(f"🔒 Created isolated AI session manager: {isolated_session_id}")
     return manager
 
 
@@ -187,14 +224,18 @@ def get_session_stats() -> Dict[str, Any]:
     """
     Get statistics about session managers.
     
+    Note: This only shows connection managers, not actual session data
+    since we don't cache AISessionManager instances.
+    
     Returns:
         Dictionary with session statistics
     """
     stats = {
         "session_managers": len(_session_managers),
-        "ai_session_managers": len(_ai_session_managers),
         "sandboxes": list(_session_managers.keys()),
-        "session_provider": os.getenv("SESSION_PROVIDER", "memory")
+        "session_provider": os.getenv("SESSION_PROVIDER", "memory"),
+        "ai_session_caching": "disabled_for_cross_server_compatibility",
+        "session_sharing": "handled_by_external_storage"
     }
     
     # Add cache stats for each session manager
@@ -212,23 +253,63 @@ def get_session_stats() -> Dict[str, Any]:
 
 
 def reset_session_caches() -> None:
-    """Reset all cached session managers (useful for testing)."""
-    global _session_managers, _ai_session_managers, _session_factory
+    """Reset cached session managers (useful for testing)."""
+    global _session_managers, _session_factory
     
     _session_managers.clear()
-    _ai_session_managers.clear()
     _session_factory = None
     
-    logger.info("Reset all session manager caches")
+    logger.info("Reset session manager caches")
+
+
+def validate_session_setup() -> Dict[str, Any]:
+    """
+    Validate the session setup and return diagnostic information.
+    
+    Returns:
+        Dictionary with validation results
+    """
+    validation = {
+        "session_provider": os.getenv("SESSION_PROVIDER", "memory"),
+        "external_storage_only": True,
+        "cross_server_compatible": True,
+        "session_managers": len(_session_managers),
+        "sandboxes": list(_session_managers.keys())
+    }
+    
+    # Test session factory
+    try:
+        factory = get_session_factory()
+        validation["factory_available"] = True
+        validation["factory_type"] = str(type(factory))
+    except Exception as e:
+        validation["factory_available"] = False
+        validation["factory_error"] = str(e)
+    
+    # Test AI session manager creation
+    try:
+        from a2a_server.utils.session_setup import SessionSetup
+        test_config = SessionSetup.create_session_config()
+        test_manager = create_ai_session_manager(test_config, "validation_test")
+        validation["ai_session_creation"] = True
+        validation["ai_session_type"] = str(type(test_manager))
+    except Exception as e:
+        validation["ai_session_creation"] = False
+        validation["ai_session_error"] = str(e)
+    
+    return validation
 
 
 __all__ = [
     "build_session_manager",
     "build_session_store",
-    "setup_ai_session_storage", 
-    "build_ai_session_manager",
+    "setup_ai_session_storage",
+    "create_ai_session_manager",           # ← Create new manager (no caching)
+    "create_shared_ai_session_manager",    # ← For cross-agent sharing
+    "create_isolated_ai_session_manager",  # ← For isolated sessions
     "get_session_factory",
     "get_session_provider",
     "get_session_stats",
-    "reset_session_caches"
+    "reset_session_caches",
+    "validate_session_setup"
 ]

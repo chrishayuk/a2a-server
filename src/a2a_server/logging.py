@@ -15,63 +15,49 @@ __all__ = ["configure_logging"]
 # Default per-module level tweaks - FIXED DUPLICATES
 # ---------------------------------------------------------------------------
 _DEFAULT_QUIET_MODULES: Dict[str, str] = {
-    "asyncio": "ERROR",  # Changed from WARNING to ERROR to silence DEBUG messages
+    "asyncio": "ERROR",
     "uvicorn": "WARNING",
-    "uvicorn.access": "WARNING",
+    "uvicorn.access": "WARNING", 
     "fastapi": "WARNING",
     "httpx": "ERROR",
     
-    # Google ADK noise - COMPREHENSIVE coverage
+    # Google ADK noise
     "google": "WARNING",
-    "google.adk": "WARNING", 
-    "google.adk.models": "ERROR",  # This should catch the registry
-    "google.adk.models.registry": "ERROR",  # Explicit registry silencing
-    "google.adk.models.lite_llm": "ERROR",
-    "google.adk.runners": "WARNING",
-    "google.adk.sessions": "WARNING", 
-    "google.adk.artifacts": "WARNING",
-    "google.adk.memory": "WARNING",
-    "google.adk.agents": "WARNING",
-    "google.genai": "WARNING",
-    
-    # ALL google_adk submodules - nuclear option
-    "google_adk": "WARNING",
-    "google_adk.google": "WARNING",
-    "google_adk.google.adk": "WARNING",
-    "google_adk.google.adk.models": "ERROR",
-    "google_adk.google.adk.models.registry": "ERROR",
+    "google.adk": "WARNING",
+    "google.adk.models": "ERROR",
+    "google.adk.models.registry": "ERROR",
     
     # LiteLLM noise
     "LiteLLM": "ERROR",
     "litellm": "ERROR",
-    "litellm.utils": "ERROR", 
-    "litellm.llms": "ERROR",
     
-    # CHUK modules - Comprehensive coverage
+    # CHUK modules - Quiet the noise but keep errors
     "chuk_sessions": "WARNING",
-    "chuk_sessions.session_manager": "WARNING",
-    "chuk_ai_session_manager": "WARNING",
-    "chuk_ai_session_manager.session_storage": "WARNING",
+    "chuk_sessions.session_manager": "ERROR",
+    "chuk_ai_session_manager": "ERROR", 
+    "chuk_ai_session_manager.session_storage": "ERROR",
     "chuk_llm": "WARNING",
-    "chuk_llm.configuration": "WARNING",
-    "chuk_llm.configuration.unified_config": "WARNING", 
-    "chuk_llm.api": "WARNING",
-    "chuk_llm.api.providers": "WARNING",
     
-    # A2A internal modules - Comprehensive coverage  
+    # CHUK Tool Processor - Silence the span logging but keep tool execution results
+    "chuk_tool_processor.span": "ERROR",  # Removes start/complete spam
+    "chuk_tool_processor.span.inprocess_execution": "ERROR",  # The main offender
+    "chuk_tool_processor.mcp.stream_manager": "ERROR",  # Reduces MCP init noise
+    "chuk_tool_processor.mcp.setup_sse": "WARNING", # Keep connection info
+    "chuk_tool_processor.mcp.register": "WARNING",  # Keep tool registration
+    
+    # A2A internal modules - Keep important ones visible
     "a2a_server.transport": "WARNING",
-    "a2a_server.transport.http": "WARNING",
     "a2a_server.session_store_factory": "WARNING",
     "a2a_server.tasks.handlers.session_aware_task_handler": "WARNING",
-    "a2a_server.tasks.handlers.chuk": "WARNING",
-    "a2a_server.tasks.handlers.chuk.chuk_agent": "WARNING",
-    "a2a_server.tasks.handlers.chuk.chuk_agent_handler": "WARNING", 
+    "a2a_server.tasks.handlers.chuk.chuk_agent": "INFO",  # Keep for debugging
     "a2a_server.handlers_setup": "WARNING",
-    
-    # Discovery module - SINGLE ENTRY, set to ERROR to silence DEBUG messages
     "a2a_server.tasks.discovery": "ERROR",
+    
+    # Sample agents - reduce initialization noise but keep operational info
+    "a2a_server.sample_agents.perplexity_agent": "WARNING",
+    "a2a_server.sample_agents.time_agent": "WARNING", 
+    "a2a_server.sample_agents.weather_agent": "WARNING",
 }
-
 
 # ---------------------------------------------------------------------------
 # Public helper

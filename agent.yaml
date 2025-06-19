@@ -1,4 +1,4 @@
-# agent.yaml - Enhanced with logging configuration
+# agent.yaml - Enhanced with explicit session sharing configuration
 server:
   host: 0.0.0.0
   port: 8000
@@ -112,17 +112,61 @@ handlers:
             - "Current time in New York"
             - "What's the time difference between London and LA?"
 
-  # Pirate Agent - Google ADK based
+  # Pirate Agent - ChukAgent-based pirate with explicit session sharing
+  chuk_pirate:
+    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
+    agent: a2a_server.sample_agents.chuk_pirate.pirate_agent
+    name: chuk_pirate
+    sandbox_id: "pirate_sessions"                    # ← Individual sandbox for isolation
+    session_sharing: true                            # ← EXPLICIT: Enable cross-agent sharing
+    shared_sandbox_group: "global_user_sessions"    # ← EXPLICIT: Shared group for memory
+    agent_card:
+      name: Pirate Agent
+      description: "Captain Blackbeard's Ghost - legendary pirate with authentic swagger and maritime wisdom"
+      version: "1.0.0"
+      documentationUrl: "https://a2a-server.fly.dev/pirate_agent/docs"
+      provider:
+        organization: "chrishayuk"
+        url: "https://chrishayuk.io"
+      capabilities:
+        streaming: true
+        pushNotifications: false
+        tools: false  # No MCP tools needed for this pirate
+      authentication:
+        schemes:
+          - "None"
+      defaultInputModes:
+        - "text/plain"
+      defaultOutputModes:
+        - "text/plain"
+      skills:
+        - id: pirate-wisdom
+          name: Pirate Wisdom
+          description: "Authentic pirate advice, sea tales, and maritime knowledge"
+          tags:
+            - pirate
+            - sailing
+            - adventure
+            - maritime
+            - storytelling
+          examples:
+            - "Tell me a pirate tale"
+            - "How do I navigate by the stars?"
+            - "What's the best way to manage a ship's crew?"
+            - "Share some pirate wisdom about treasure hunting"
+            - "Teach me a sea shanty"
+
+  # Pirate Agent - Google ADK based (kept for comparison, isolated)
   pirate_agent:
     type: a2a_server.tasks.handlers.adk.google_adk_handler.GoogleADKHandler
     agent: a2a_server.sample_agents.pirate_agent.pirate_agent
     name: pirate_agent
     use_sessions: false  # Explicit session control
     agent_card:
-      name: Pirate Agent
+      name: Legacy Pirate Agent
       description: "Converts your text into authentic pirate-speak, arrr!"
       version: "0.1.0"
-      documentationUrl: "https://a2a-server.fly.dev/pirate_agent/docs"
+      documentationUrl: "https://a2a-server.fly.dev/legacy_pirate_agent/docs"
       provider:
         organization: "chrishayuk"
         url: "https://chrishayuk.io"
@@ -148,12 +192,13 @@ handlers:
             - "Turn this into pirate speak: Hello there!"
             - "Make this sound like a pirate: Good morning!"
 
-  # Chef Agent - Google ADK based
+  # Chef Agent - Google ADK based (keep for comparison, isolated)
   chef_agent:
     type: a2a_server.tasks.handlers.adk.google_adk_handler.GoogleADKHandler
     agent: a2a_server.sample_agents.chef_agent.chef_agent
     name: chef_agent
-    use_sessions: false  # Explicit session control
+    use_sessions: true
+    sandbox_id: "adk_chef_sessions"  # Separate from shared sessions
     agent_card:
       name: Chef Agent
       description: "Your culinary companion for recipe suggestions and cooking advice"
@@ -185,7 +230,70 @@ handlers:
             - "Vegetarian recipe with spinach and cheese"
             - "Quick dessert with chocolate and bananas"
 
-  # Time Ticker - Demo streaming handler
+  # Chuk Chef Agent - ChukAgent-based chef with explicit session sharing
+  chuk_chef:
+    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
+    agent: a2a_server.sample_agents.chuk_chef.chef_agent
+    name: chuk_chef
+    sandbox_id: "chef_sessions"                     # ← Individual sandbox for isolation
+    session_sharing: true                           # ← EXPLICIT: Enable cross-agent sharing
+    shared_sandbox_group: "global_user_sessions"   # ← EXPLICIT: Same shared group as pirate
+    agent_card:
+      name: Chuk Chef Agent
+      description: "Professional chef powered by ChukAgent with full LLM capabilities"
+      version: "1.0.0"
+      documentationUrl: "https://a2a-server.fly.dev/chuk_chef/docs"
+      provider:
+        organization: "chrishayuk"
+        url: "https://chrishayuk.io"
+      capabilities:
+        streaming: true
+        pushNotifications: false
+        tools: false  # No MCP tools needed for this chef
+      authentication:
+        schemes:
+          - "None"
+      defaultInputModes:
+        - "text/plain"
+      defaultOutputModes:
+        - "text/plain"
+      skills:
+        - id: gourmet-recipes
+          name: Gourmet Recipe Creation
+          description: "Create detailed, professional recipes with Chef Gourmet's expertise"
+          tags:
+            - cooking
+            - recipes
+            - gourmet
+            - chef
+            - professional
+          examples:
+            - "Chocolate chip cookie recipe"
+            - "Italian pasta carbonara"
+            - "How to make perfect risotto"
+            - "Vegetarian lasagna recipe"
+            - "What can I substitute for eggs in baking?"
+
+  # Example: Agent with isolated sessions (for comparison)
+  weather_agent:
+    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
+    agent: a2a_server.sample_agents.weather_agent.weather_agent
+    name: weather_agent
+    sandbox_id: "weather_sessions"
+    session_sharing: false                          # ← EXPLICIT: Disable sharing for privacy
+    agent_card:
+      name: Weather Agent
+      description: "Provides weather forecasts and conditions using MCP tools"
+      capabilities:
+        tools: true
+        streaming: true
+      skills:
+        - id: weather-forecast
+          name: Weather Forecast
+          description: "Get current weather and forecasts"
+          tags: [weather, forecast, mcp]
+
+  # Time Ticker - Demo streaming handler (no sessions)
   time_ticker:
     type: a2a_server.tasks.handlers.time_ticker_handler.TimeTickerHandler
     name: time_ticker
@@ -212,7 +320,7 @@ handlers:
             - "Show me the time stream"
             - "Start time ticker"
 
-  # Pirate Vision - Demo multimodal handler
+  # Pirate Vision - Demo multimodal handler (no sessions)
   pirate_vision:
     type: a2a_server.tasks.handlers.pirate_vision_handler.PirateVisionHandler
     name: pirate_vision
@@ -240,22 +348,3 @@ handlers:
           examples:
             - "What do you see in this image, matey?"
             - "Describe this picture like a pirate"
-
-  # Weather Agent with MCP tools
-  weather_agent:
-    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
-    agent: a2a_server.sample_agents.weather_agent.weather_agent
-    name: weather_agent
-    agent_card:
-      name: Weather Agent
-      description: "Provides weather forecasts and conditions using MCP tools"
-      capabilities:
-        tools: true
-        streaming: true
-      skills:
-        - id: weather-forecast
-          name: Weather Forecast
-          description: "Get current weather and forecasts"
-          tags: [weather, forecast, mcp]
-
-  

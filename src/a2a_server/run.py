@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Optional
 
-# CRITICAL: Set up quiet logging IMMEDIATELY before any other imports
+# Set up quiet logging IMMEDIATELY before any other imports
 logging.getLogger('a2a_server.tasks.discovery').setLevel(logging.ERROR)
 logging.getLogger('chuk_sessions.session_manager').setLevel(logging.WARNING)
 logging.getLogger('chuk_ai_session_manager.session_storage').setLevel(logging.WARNING)

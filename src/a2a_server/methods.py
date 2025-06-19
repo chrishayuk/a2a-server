@@ -93,10 +93,63 @@ def _rpc(
     def _decor(fn: Callable[[str, _R, Dict[str, Any]], Any]) -> None:
         @proto.method(rpc_name)
         async def _handler(method: str, params: Dict[str, Any]):  # noqa: D401, ANN001
-            logger.info("Received RPC method %s", method)
+            # Enhanced logging for better message visibility
+            if method == "tasks/send":
+                # Extract message content for visibility
+                message_content = ""
+                try:
+                    message_obj = params.get("message", {})
+                    parts = message_obj.get("parts", [])
+                    if parts and isinstance(parts[0], dict):
+                        message_content = parts[0].get("text", "")[:80]  # First 80 chars
+                    elif hasattr(message_obj, 'parts') and message_obj.parts:
+                        # Handle Pydantic model case
+                        message_content = str(message_obj.parts[0])[:80]
+                except Exception:
+                    message_content = "unknown"
+                
+                handler_name = params.get("handler", "default")
+                logger.info(f"📤 New message to {handler_name}: '{message_content}...'")
+                
+            elif method == "tasks/sendSubscribe":
+                # Log streaming task creation
+                try:
+                    message_obj = params.get("message", {})
+                    parts = message_obj.get("parts", [])
+                    if parts and isinstance(parts[0], dict):
+                        message_content = parts[0].get("text", "")[:60]
+                    else:
+                        message_content = "unknown"
+                except Exception:
+                    message_content = "unknown"
+                    
+                handler_name = params.get("handler", "default")
+                logger.info(f"📡 Streaming message to {handler_name}: '{message_content}...'")
+                
+            elif method == "tasks/get":
+                # Log task status checks (but at debug level to avoid spam)
+                task_id = params.get("id", "unknown")[:12]
+                logger.debug(f"📋 Task status check: {task_id}...")
+                
+            elif method == "tasks/cancel":
+                # Log task cancellations
+                task_id = params.get("id", "unknown")[:12]
+                logger.info(f"❌ Canceling task: {task_id}...")
+                
+            else:
+                # Log other RPC methods
+                logger.info(f"🔧 RPC method: {method}")
+            
             logger.debug("Method params: %s", params)
             validated = validator(params)
-            return await fn(method, validated, params)
+            result = await fn(method, validated, params)
+            
+            # Log task creation success for send operations
+            if method in ("tasks/send", "tasks/sendSubscribe") and isinstance(result, dict):
+                task_id = result.get("id", "unknown")[:12]
+                logger.info(f"✅ Created task: {task_id}...")
+                
+            return result
 
     return _decor
 
