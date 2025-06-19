@@ -1,6 +1,7 @@
-# a2a_server/tasks/handlers/chuk/chuk_agent.py (CORRECTED - Pure Agent)
+# a2a_server/tasks/handlers/chuk/chuk_agent.py (FIXED VERSION)
 """
 Pure ChukAgent class - framework agnostic, no A2A dependencies.
+FIXED: Proper initialization order and error handling.
 """
 import asyncio
 import json
@@ -20,7 +21,7 @@ from chuk_tool_processor.execution.tool_executor import ToolExecutor
 from chuk_tool_processor.execution.strategies.inprocess_strategy import InProcessStrategy
 from chuk_tool_processor.models.tool_call import ToolCall
 
-# Internal session management (optional - agent can manage its own sessions)
+# Internal session management (optional)
 try:
     from chuk_ai_session_manager import SessionManager as AISessionManager
     from chuk_ai_session_manager.session_storage import setup_chuk_sessions_storage
@@ -35,8 +36,7 @@ class ChukAgent:
     """
     Pure ChukAgent - framework agnostic with MCP tool support and optional session management.
     
-    This is a pure agent class that can be used in any framework, not just A2A.
-    It handles its own sessions internally and provides simple chat/complete interfaces.
+    FIXED: Proper initialization order and graceful error handling.
     """
     
     def __init__(
@@ -53,9 +53,10 @@ class ChukAgent:
         mcp_servers: Optional[List[str]] = None,
         mcp_transport: str = "stdio",
         mcp_sse_servers: Optional[List[Dict[str, str]]] = None,
-        namespace: str = "tools",
+        tool_namespace: str = "tools",  # FIXED: Changed from namespace to tool_namespace
         max_concurrency: int = 4,
         tool_timeout: float = 30.0,
+        enable_tools: bool = True,  # FIXED: Added explicit enable_tools parameter
         
         # Agent-internal session management (optional)
         enable_sessions: bool = True,
@@ -78,13 +79,14 @@ class ChukAgent:
         self.model = model
         self.use_system_prompt_generator = use_system_prompt_generator
         self.streaming = streaming
+        self.enable_tools = enable_tools  # FIXED: Store enable_tools
         
         # MCP configuration
         self.mcp_config_file = mcp_config_file
         self.mcp_servers = mcp_servers or []
         self.mcp_transport = mcp_transport
         self.mcp_sse_servers = mcp_sse_servers or []
-        self.namespace = namespace
+        self.tool_namespace = tool_namespace  # FIXED: Use tool_namespace consistently
         self.max_concurrency = max_concurrency
         self.tool_timeout = tool_timeout
         
@@ -179,8 +181,8 @@ class ChukAgent:
             return str(response) if response is not None else ""
 
     async def initialize_tools(self):
-        """Initialize MCP connection and tools."""
-        if self._tools_initialized:
+        """Initialize MCP connection and tools - FIXED VERSION."""
+        if self._tools_initialized or not self.enable_tools:
             return
             
         try:
@@ -192,7 +194,7 @@ class ChukAgent:
                     config_file=self.mcp_config_file,
                     servers=self.mcp_servers,
                     server_names=server_names,
-                    namespace=self.namespace,
+                    namespace=self.tool_namespace,
                 )
                 
             elif self.mcp_transport == "sse" and self.mcp_sse_servers:
@@ -202,9 +204,10 @@ class ChukAgent:
                 _, self.stream_manager = await setup_mcp_sse(
                     servers=self.mcp_sse_servers,
                     server_names=server_names,
-                    namespace=self.namespace,
+                    namespace=self.tool_namespace,
                 )
             
+            # FIXED: Only proceed if we have a stream manager
             if self.stream_manager:
                 self.registry = await ToolRegistryProvider.get_registry()
                 
@@ -215,49 +218,47 @@ class ChukAgent:
                 )
                 self.executor = ToolExecutor(self.registry, strategy=strategy)
                 
-                self._tools_initialized = True
-                logger.info(f"MCP initialized successfully with namespace '{self.namespace}'")
+                logger.info(f"MCP initialized successfully with namespace '{self.tool_namespace}'")
+            else:
+                logger.warning("No stream manager created - tools will not be available")
+            
+            self._tools_initialized = True
             
         except Exception as e:
             logger.error(f"Failed to initialize MCP: {e}")
-            self._tools_initialized = False
+            logger.exception("MCP initialization error:")
+            self._tools_initialized = True  # FIXED: Mark as initialized to prevent retry loops
+            self.enable_tools = False  # Disable tools on failure
 
     async def get_available_tools(self) -> List[str]:
         """Get list of available tools."""
-        if not self.registry:
+        if not self.registry or not self.enable_tools:
             return []
             
         try:
             tools = await self.registry.list_tools()
-            return [name for ns, name in tools if ns == self.namespace]
+            return [name for ns, name in tools if ns == self.tool_namespace]
         except Exception as e:
             logger.error(f"Error getting tools: {e}")
             return []
 
     async def execute_tools(self, tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Execute tool calls using actual MCP parameters (FIXED)."""
-        if not self.executor:
-            return [{"error": "Tool executor not initialized"} for _ in tool_calls]
+        """Execute tool calls using actual MCP parameters."""
+        if not self.executor or not self.enable_tools:
+            return [{"error": "Tool executor not available"} for _ in tool_calls]
         
         # Convert to ToolCall objects with proper argument handling
         calls = []
         for tc in tool_calls:
-            # Handle both dict and object formats
-            if isinstance(tc, dict):
-                func = tc.get("function", {})
-                tool_call_id = tc.get("id", "unknown")
-            else:
-                func = getattr(tc, 'function', {})
-                tool_call_id = getattr(tc, 'id', 'unknown')
-            
-            tool_name = func.get("name", "") if isinstance(func, dict) else getattr(func, 'name', '')
+            func = tc.get("function", {})
+            tool_name = func.get("name", "")
             
             # Remove namespace prefix if present
-            if tool_name.startswith(f"{self.namespace}."):
-                tool_name = tool_name[len(f"{self.namespace}."):]
+            if tool_name.startswith(f"{self.tool_namespace}."):
+                tool_name = tool_name[len(f"{self.tool_namespace}."):]
             
-            # Parse arguments - NO MORE GENERIC WRAPPER
-            args = func.get("arguments", {}) if isinstance(func, dict) else getattr(func, 'arguments', {})
+            # Parse arguments
+            args = func.get("arguments", {})
             if isinstance(args, str):
                 try:
                     args = json.loads(args)
@@ -265,10 +266,10 @@ class ChukAgent:
                     logger.error(f"Failed to parse tool arguments: {args}, error: {e}")
                     args = {}
             
-            # Create ToolCall with actual arguments (not wrapped)
+            # Create ToolCall with actual arguments
             calls.append(ToolCall(
-                tool=f"{self.namespace}.{tool_name}",
-                arguments=args  # Use actual arguments, not {"query": args}
+                tool=f"{self.tool_namespace}.{tool_name}",
+                arguments=args
             ))
             
             logger.debug(f"Executing tool {tool_name} with args: {args}")
@@ -279,15 +280,9 @@ class ChukAgent:
             # Format results
             formatted_results = []
             for tc, result in zip(tool_calls, results):
-                # Handle both dict and object formats for tool_call_id
-                if isinstance(tc, dict):
-                    tool_call_id = tc.get("id", "unknown")
-                else:
-                    tool_call_id = getattr(tc, 'id', 'unknown')
-                
                 if result.error:
                     formatted_results.append({
-                        "tool_call_id": tool_call_id,
+                        "tool_call_id": tc.get("id"),
                         "content": f"Error: {result.error}"
                     })
                 else:
@@ -298,7 +293,7 @@ class ChukAgent:
                         content = "No result"
                     
                     formatted_results.append({
-                        "tool_call_id": tool_call_id, 
+                        "tool_call_id": tc.get("id"), 
                         "content": str(content)
                     })
             
@@ -310,94 +305,82 @@ class ChukAgent:
             return [{"error": str(e)} for _ in tool_calls]
 
     async def generate_tools_schema(self) -> List[Dict[str, Any]]:
-        """Generate OpenAI-style tool schema using actual MCP tool definitions."""
-        if not self.registry:
+        """Generate OpenAI-style tool schema using stream manager."""
+        if not self.stream_manager or not self.enable_tools:
+            logger.info("Stream manager or tools not available for schema generation")
             return []
         
         tools = []
         try:
-            # Get all tools with their actual schemas
-            tool_list = await self.registry.list_tools()
-            
-            for namespace, tool_name in tool_list:
-                if namespace != self.namespace:
-                    continue
+            # Method 1: Try get_all_tools() first
+            try:
+                all_tools = self.stream_manager.get_all_tools()
+                logger.debug(f"get_all_tools() returned {len(all_tools)} tools")
+                
+                for tool_info in all_tools:
+                    tool_name = tool_info.get('name', '')
+                    description = tool_info.get('description', f"Execute {tool_name} tool")
+                    input_schema = tool_info.get('inputSchema', {})
                     
-                try:
-                    # Get the actual tool definition from registry
-                    tool_def = await self.registry.get_tool(namespace, tool_name)
-                    
-                    if tool_def and hasattr(tool_def, 'input_schema'):
-                        # Use the actual MCP schema
-                        schema = tool_def.input_schema
-                        
-                        # Convert MCP schema to OpenAI format
+                    if tool_name:
                         openai_tool = {
                             "type": "function",
                             "function": {
                                 "name": tool_name,
-                                "description": getattr(tool_def, 'description', f"Execute {tool_name} tool"),
-                                "parameters": schema if isinstance(schema, dict) else schema.model_dump() if hasattr(schema, 'model_dump') else {
-                                    "type": "object",
-                                    "properties": {},
-                                    "required": []
-                                }
+                                "description": description,
+                                "parameters": input_schema
                             }
                         }
-                        
                         tools.append(openai_tool)
-                        logger.debug(f"Added tool schema for {tool_name}: {openai_tool}")
-                        
-                    else:
-                        logger.warning(f"No schema found for tool {namespace}.{tool_name}")
-                        
-                except Exception as e:
-                    logger.error(f"Error getting schema for tool {namespace}.{tool_name}: {e}")
-                    
-            logger.info(f"Generated {len(tools)} tool schemas")
-            return tools
-            
-        except Exception as e:
-            logger.error(f"Error generating tool schemas: {e}")
-            return []
-
-    async def debug_tools(self) -> Dict[str, Any]:
-        """Debug method to inspect tool configuration."""
-        debug_info = {
-            "registry_available": self.registry is not None,
-            "executor_available": self.executor is not None,
-            "tools_initialized": self._tools_initialized,
-            "namespace": self.namespace,
-            "available_tools": [],
-            "tool_schemas": []
-        }
-        
-        if self.registry:
-            try:
-                tool_list = await self.registry.list_tools()
-                debug_info["available_tools"] = [(ns, name) for ns, name in tool_list if ns == self.namespace]
+                        logger.info(f"✅ Added tool schema for {tool_name}")
                 
-                # Get schemas for debugging
-                for namespace, tool_name in tool_list:
-                    if namespace == self.namespace:
-                        try:
-                            tool_def = await self.registry.get_tool(namespace, tool_name)
-                            if tool_def:
-                                schema_info = {
-                                    "name": tool_name,
-                                    "description": getattr(tool_def, 'description', 'No description'),
-                                    "input_schema": getattr(tool_def, 'input_schema', 'No schema')
-                                }
-                                debug_info["tool_schemas"].append(schema_info)
-                        except Exception as e:
-                            debug_info["tool_schemas"].append({
-                                "name": tool_name,
-                                "error": str(e)
-                            })
+                if tools:
+                    logger.info(f"Generated {len(tools)} tool schemas via get_all_tools()")
+                    return tools
+                    
             except Exception as e:
-                debug_info["registry_error"] = str(e)
-        
-        return debug_info
+                logger.debug(f"get_all_tools() failed: {e}")
+            
+            # Method 2: Fallback to list_tools() with server names
+            server_names = getattr(self.stream_manager, 'server_names', {})
+            logger.debug(f"Fallback: trying list_tools() with server names: {server_names}")
+            
+            for server_id, server_name in server_names.items():
+                try:
+                    server_tools = await self.stream_manager.list_tools(server_name)
+                    logger.debug(f"list_tools({server_name}) returned {len(server_tools)} tools")
+                    
+                    for tool_info in server_tools:
+                        tool_name = tool_info.get('name', '')
+                        description = tool_info.get('description', f"Execute {tool_name} tool")
+                        input_schema = tool_info.get('inputSchema', {})
+                        
+                        if tool_name:
+                            openai_tool = {
+                                "type": "function",
+                                "function": {
+                                    "name": tool_name,
+                                    "description": description,
+                                    "parameters": input_schema
+                                }
+                            }
+                            tools.append(openai_tool)
+                            logger.info(f"✅ Added tool schema for {tool_name}")
+                
+                except Exception as e:
+                    logger.error(f"list_tools({server_name}) failed: {e}")
+            
+            if tools:
+                logger.info(f"Generated {len(tools)} tool schemas via list_tools()")
+                return tools
+            else:
+                logger.warning("No tools generated from stream manager")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error generating tool schemas from stream manager: {e}")
+            logger.debug(f"Exception details:", exc_info=True)
+            return []
 
     async def complete(
         self,
@@ -407,7 +390,9 @@ class ChukAgent:
         **llm_kwargs
     ) -> Dict[str, Any]:
         """Complete a conversation with optional tool usage and session tracking."""
-        await self.initialize_tools()
+        # FIXED: Always initialize tools if they're enabled
+        if self.enable_tools:
+            await self.initialize_tools()
         
         # Add session context if available and enabled
         ai_session = self._get_ai_session(session_id) if session_id else None
@@ -435,7 +420,7 @@ class ChukAgent:
         
         # Get tools if requested and available
         tools = None
-        if use_tools:
+        if use_tools and self.enable_tools:
             tools = await self.generate_tools_schema()
             if not tools:
                 use_tools = False

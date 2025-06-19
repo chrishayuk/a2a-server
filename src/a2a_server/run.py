@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
-# a2a_server/run.py - FIXED to apply logging BEFORE imports
+# a2a_server/run.py
 from __future__ import annotations
-"""Async-native CLI entry-point for the A2A server.
-
-Changes (June-2025)
--------------------
-* FIXED: Apply logging configuration IMMEDIATELY to prevent startup noise
-* Uvicorn handles signals; no manual SIGINT juggling.
-* Awaitable `load_config` keeps startup async.
-"""
+"""Async-native CLI entry-point for the A2A server."""
 import logging
 import os
 from typing import Optional

@@ -56,8 +56,25 @@ logging:
 
 handlers:
   use_discovery: false
-  default_handler: time_agent
+  default_handler: perplexity_agent
   
+  # Perplexity Agent with SSE MCP tools
+  perplexity_agent:
+    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
+    agent: a2a_server.sample_agents.perplexity_agent.perplexity_agent
+    name: perplexity_agent
+    agent_card:
+      name: Perplexity Agent
+      description: "Advanced research agent with Perplexity search capabilities"
+      capabilities:
+        tools: true
+        streaming: true
+      skills:
+        - id: research
+          name: Research
+          description: "Deep research on any topic"
+          tags: [research, search, perplexity]
+
   # Time Agent - MCP enabled with time tools
   time_agent:
     type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
@@ -241,19 +258,4 @@ handlers:
           description: "Get current weather and forecasts"
           tags: [weather, forecast, mcp]
 
-  # Perplexity Agent with SSE MCP tools
-  perplexity_agent:
-    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
-    agent: a2a_server.sample_agents.perplexity_agent.perplexity_agent
-    name: perplexity_agent
-    agent_card:
-      name: Perplexity Agent
-      description: "Advanced research agent with Perplexity search capabilities"
-      capabilities:
-        tools: true
-        streaming: true
-      skills:
-        - id: research
-          name: Research
-          description: "Deep research on any topic"
-          tags: [research, search, perplexity]
+  

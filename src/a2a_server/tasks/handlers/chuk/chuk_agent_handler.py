@@ -140,12 +140,16 @@ class AgentHandler(TaskHandler):
         try:
             # Extract user message
             user_content = self._extract_message_content(message)
+            logger.info(f"Processing message: {user_content}")
             
             # Initialize tools
+            logger.info("Initializing ChukAgent tools...")
             await self.agent.initialize_tools()
+            logger.info("Tools initialization completed")
             
             # Get available tools for enhanced instruction
             available_tools = await self.agent.get_available_tools()
+            logger.info(f"Available tools: {available_tools}")
             
             # Build enhanced instruction
             enhanced_instruction = self.agent.get_system_prompt()
@@ -158,39 +162,142 @@ class AgentHandler(TaskHandler):
                 {"role": "user", "content": user_content}
             ]
             
-            # Use agent's complete method with session support
-            result = await self.agent.complete(messages, use_tools=True, session_id=session_id)
+            logger.info("About to call ChukAgent.complete...")
             
-            # Emit tool artifacts if tools were used
-            if result["tool_calls"]:
-                for i, (tool_call, tool_result) in enumerate(zip(result["tool_calls"], result["tool_results"])):
-                    tool_artifact = Artifact(
-                        name=f"tool_call_{i}",
-                        parts=[TextPart(
-                            type="text",
-                            text=f"🔧 Tool: {tool_call.function.name}\n📥 Input: {tool_call.function.arguments}\n📤 Result: {tool_result.get('content', 'No result')}"
-                        )],
-                        index=i + 1
+            # Debug: Use simplified approach first
+            try:
+                # Get LLM client and test basic completion
+                llm_client = await self.agent.get_llm_client()
+                logger.info("LLM client obtained successfully")
+                
+                # Get tool schemas
+                tools = await self.agent.generate_tools_schema()
+                logger.info(f"Generated {len(tools)} tool schemas")
+                
+                if tools:
+                    logger.info("Available tool schemas:")
+                    for tool in tools:
+                        logger.info(f"  - {tool['function']['name']}: {tool['function'].get('description', 'No description')}")
+                
+                # Try LLM call
+                if tools and len(tools) > 0:
+                    logger.info("Calling LLM with tools")
+                    response = await llm_client.create_completion(
+                        messages=messages,
+                        tools=tools,
+                        tool_choice="auto"
                     )
-                    yield TaskArtifactUpdateEvent(id=task_id, artifact=tool_artifact)
-            
-            # Emit final response
-            response_artifact = Artifact(
-                name=f"{self.agent.name}_response",
-                parts=[TextPart(type="text", text=result["content"] or "No response generated")],
-                index=0
-            )
-            yield TaskArtifactUpdateEvent(id=task_id, artifact=response_artifact)
-            
-            # Completion
-            yield TaskStatusUpdateEvent(
-                id=task_id,
-                status=TaskStatus(state=TaskState.completed),
-                final=True
-            )
+                else:
+                    logger.info("Calling LLM without tools")
+                    response = await llm_client.create_completion(messages=messages)
+                
+                logger.info(f"LLM response received: {type(response)}")
+                
+                # Extract content
+                if isinstance(response, dict):
+                    content = response.get('response') or response.get('content', '')
+                    tool_calls = response.get('tool_calls', [])
+                else:
+                    content = getattr(response, 'content', '') or getattr(response, 'response', '')
+                    tool_calls = getattr(response, 'tool_calls', [])
+                
+                logger.info(f"Extracted content: {content}")
+                logger.info(f"Tool calls: {len(tool_calls) if tool_calls else 0}")
+                
+                # Handle tool calls if present
+                tool_results = []
+                if tool_calls and len(tool_calls) > 0:
+                    logger.info(f"Processing {len(tool_calls)} tool calls")
+                    try:
+                        tool_results = await self.agent.execute_tools(tool_calls)
+                        logger.info(f"Tool execution completed: {len(tool_results)} results")
+                        
+                        # Emit tool artifacts
+                        for i, tool_result in enumerate(tool_results):
+                            tool_artifact = Artifact(
+                                name=f"tool_call_{i}",
+                                parts=[TextPart(
+                                    type="text",
+                                    text=f"🔧 Tool Result {i+1}:\n{tool_result.get('content', 'No result')}"
+                                )],
+                                index=i + 1
+                            )
+                            yield TaskArtifactUpdateEvent(id=task_id, artifact=tool_artifact)
+                        
+                        # Get final response after tool execution
+                        enhanced_messages = messages + [
+                            {
+                                "role": "assistant", 
+                                "content": content or "I'll use my tools to help you.",
+                                "tool_calls": tool_calls
+                            }
+                        ]
+                        
+                        for result in tool_results:
+                            enhanced_messages.append({
+                                "role": "tool",
+                                "tool_call_id": result.get("tool_call_id", "unknown"),
+                                "content": result.get("content", "No result")
+                            })
+                        
+                        logger.info("Getting final response after tool execution")
+                        final_response = await llm_client.create_completion(messages=enhanced_messages)
+                        
+                        if isinstance(final_response, dict):
+                            final_content = final_response.get('response') or final_response.get('content', '')
+                        else:
+                            final_content = getattr(final_response, 'content', '') or getattr(final_response, 'response', '')
+                        
+                        content = final_content or content
+                    
+                    except Exception as tool_error:
+                        logger.error(f"Tool execution failed: {tool_error}")
+                        logger.exception("Tool execution traceback:")
+                        # Continue with original content
+                
+                # Ensure we have some content
+                if not content:
+                    content = "I apologize, but I wasn't able to generate a proper response."
+                
+                # Emit final response
+                response_artifact = Artifact(
+                    name=f"{self.agent.name}_response",
+                    parts=[TextPart(type="text", text=content)],
+                    index=0
+                )
+                yield TaskArtifactUpdateEvent(id=task_id, artifact=response_artifact)
+                
+                # Completion
+                yield TaskStatusUpdateEvent(
+                    id=task_id,
+                    status=TaskStatus(state=TaskState.completed),
+                    final=True
+                )
+                
+                logger.info("Task completed successfully")
+                
+            except Exception as llm_error:
+                logger.error(f"LLM processing failed: {llm_error}")
+                logger.exception("LLM processing traceback:")
+                
+                # Fallback response
+                fallback_content = f"I encountered an error while processing your request: {str(llm_error)}"
+                response_artifact = Artifact(
+                    name="error_response",
+                    parts=[TextPart(type="text", text=fallback_content)],
+                    index=0
+                )
+                yield TaskArtifactUpdateEvent(id=task_id, artifact=response_artifact)
+                
+                yield TaskStatusUpdateEvent(
+                    id=task_id,
+                    status=TaskStatus(state=TaskState.completed),
+                    final=True
+                )
             
         except Exception as e:
             logger.error(f"Error processing task with ChukAgent: {e}")
+            logger.exception("ChukAgent processing traceback:")
             
             # Error artifact
             error_artifact = Artifact(
