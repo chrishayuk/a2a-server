@@ -1,44 +1,271 @@
-# agent.yaml
+# agent.yaml - Updated configuration with working factories and enhanced agents
 server:
   host: 0.0.0.0
   port: 8000
 
-# _session_store:
+# Optional: Enable Redis for production session storage
+# session_store:
 #   backend: redis
 #   redis_url: redis://redis:6379/0
+
+# Logging configuration to reduce noise
+logging:
+  level: "info"
+  quiet_modules:
+    "asyncio": "WARNING"
+    "uvicorn": "WARNING"
+    "uvicorn.access": "WARNING"
+    "fastapi": "WARNING"
+    "httpx": "ERROR"
+    "google": "WARNING"
+    "google.adk": "WARNING"
+    "google.adk.models": "ERROR"
+    "google.adk.models.registry": "ERROR"
+    "LiteLLM": "ERROR"
+    "litellm": "ERROR"
+    "chuk_sessions": "WARNING"
+    "chuk_ai_session_manager": "WARNING"
+    "a2a_server.tasks.discovery": "WARNING"
 
 handlers:
   use_discovery: false
   default_handler: perplexity_agent
-  # 🆕 Perplexity agent --------------------------------------------------
+
+  # 🆕 UPDATED: Perplexity Agent - Now using factory function
   perplexity_agent:
     type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
-    agent: a2a_server.sample_agents.perplexity_agent.perplexity_agent
+    agent: a2a_server.sample_agents.perplexity_agent.create_perplexity_agent  # ✅ Factory function
     name: perplexity_agent
+    
+    # Session and tool configuration
+    enable_sessions: true
+    enable_tools: false  # Start disabled, can enable SSE tools later
+    infinite_context: true
+    token_threshold: 6000
+    max_turns_per_segment: 30
+    session_ttl_hours: 24
+    
+    # Model configuration
+    provider: "openai"
+    model: "gpt-4o-mini"
+    streaming: true
+    
     agent_card:
       name: Perplexity Agent
-      description: "Uses mock Perplexity tools over SSE to answer questions"
+      description: "Advanced research agent with search capabilities and conversation memory"
       url: "https://a2a-server.fly.dev/perplexity_agent"
-      version: "0.1.0"
-      capabilities: { streaming: true }
-      defaultInputModes:  ["text/plain"]
-      defaultOutputModes: ["text/plain"]
+      version: "1.0.0"
+      documentationUrl: "https://a2a-server.fly.dev/perplexity_agent/docs"
+      provider:
+        organization: "chrishayuk"
+        url: "https://chrishayuk.io"
+      capabilities:
+        streaming: true
+        pushNotifications: false
+        tools: false  # Will show true when SSE tools enabled
+        sessions: true
+      authentication:
+        schemes:
+          - "None"
+      defaultInputModes:
+        - "text/plain"
+      defaultOutputModes:
+        - "text/plain"
       skills:
         - id: perplexity-search
-          name: Perplexity Search
-          description: "Search or deep-research any topic via Perplexity tools"
-          tags: [search, research]
+          name: Research & Analysis
+          description: "Deep research, information synthesis, and analytical reasoning with memory"
+          tags:
+            - research
+            - analysis
+            - synthesis
+            - conversational
           examples:
             - "What are the latest AI breakthroughs?"
             - "Explain quantum computing applications"
+            - "Research the impact of climate change on agriculture"
+            - "Compare different programming languages for data science"
 
+  # 🔧 ENHANCED: ChukAgent Pirate - Full featured with sessions
+  chuk_pirate:
+    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
+    agent: a2a_server.sample_agents.chuk_pirate.create_pirate_agent
+    name: chuk_pirate
+    
+    # Session configuration
+    sandbox_id: "pirate_sessions"
+    session_sharing: true
+    shared_sandbox_group: "global_user_sessions"
+    enable_sessions: true
+    infinite_context: true
+    token_threshold: 4000
+    max_turns_per_segment: 50
+    session_ttl_hours: 24
+    
+    # Model configuration
+    provider: "openai"
+    model: "gpt-4o-mini"
+    streaming: true
+    enable_tools: false
+    
+    agent_card:
+      name: Pirate Captain (Advanced)
+      description: "Captain Blackbeard's Ghost with full conversation memory and maritime wisdom"
+      url: "https://a2a-server.fly.dev/chuk_pirate"
+      version: "1.0.0"
+      documentationUrl: "https://a2a-server.fly.dev/chuk_pirate/docs"
+      provider:
+        organization: "chrishayuk"
+        url: "https://chrishayuk.io"
+      capabilities:
+        streaming: true
+        pushNotifications: false
+        tools: false
+        sessions: true
+      authentication:
+        schemes:
+          - "None"
+      defaultInputModes:
+        - "text/plain"
+      defaultOutputModes:
+        - "text/plain"
+      skills:
+        - id: pirate-wisdom
+          name: Pirate Wisdom & Tales
+          description: "Authentic pirate advice, sea tales, and maritime knowledge with full memory"
+          tags:
+            - pirate
+            - sailing
+            - adventure
+            - maritime
+            - storytelling
+            - conversational
+            - memory
+          examples:
+            - "Tell me a pirate tale and remember my favorite stories"
+            - "How do I navigate by the stars?"
+            - "What's the best way to manage a ship's crew?"
+            - "Share some pirate wisdom about treasure hunting"
+
+  # 🔧 ENHANCED: ChukAgent Chef - Full featured with sessions
+  chuk_chef:
+    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
+    agent: a2a_server.sample_agents.chuk_chef.create_chef_agent
+    name: chuk_chef
+    
+    # Session configuration
+    sandbox_id: "chef_sessions"
+    session_sharing: true
+    shared_sandbox_group: "culinary_sessions"
+    enable_sessions: true
+    infinite_context: true
+    token_threshold: 4000
+    max_turns_per_segment: 50
+    session_ttl_hours: 24
+    
+    # Model configuration
+    provider: "openai"
+    model: "gpt-4o-mini"
+    streaming: true
+    enable_tools: false
+    
+    agent_card:
+      name: Chef Gourmet (Advanced)
+      description: "Professional chef with conversation memory and personalized cooking assistance"
+      url: "https://a2a-server.fly.dev/chuk_chef"
+      version: "1.0.0"
+      documentationUrl: "https://a2a-server.fly.dev/chuk_chef/docs"
+      provider:
+        organization: "chrishayuk"
+        url: "https://chrishayuk.io"
+      capabilities:
+        streaming: true
+        pushNotifications: false
+        tools: false
+        sessions: true
+      authentication:
+        schemes:
+          - "None"
+      defaultInputModes:
+        - "text/plain"
+      defaultOutputModes:
+        - "text/plain"
+      skills:
+        - id: gourmet-recipes
+          name: Personalized Recipe Creation
+          description: "Create recipes based on your preferences, dietary needs, and cooking history"
+          tags:
+            - cooking
+            - recipes
+            - gourmet
+            - personalized
+            - dietary
+            - conversational
+            - memory
+          examples:
+            - "Remember my dietary restrictions and suggest dinner"
+            - "Italian pasta carbonara with my preferred modifications"
+            - "What can I make with leftover ingredients from yesterday?"
+            - "Plan a week of meals based on my tastes"
+
+  # 🔧 ENHANCED: Time Agent with MCP capabilities
+  time_agent:
+    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
+    agent: a2a_server.sample_agents.time_agent.create_time_agent
+    name: time_agent
+    
+    # Configuration
+    enable_sessions: false  # Utility agent, no memory needed
+    enable_tools: false     # Start disabled, enable MCP tools when ready
+    provider: "openai"
+    model: "gpt-4o-mini"
+    streaming: true
+    
+    agent_card:
+      name: Time Assistant
+      description: "Time and timezone assistance with MCP tool capabilities"
+      url: "https://a2a-server.fly.dev/time_agent"
+      version: "1.0.0"
+      documentationUrl: "https://a2a-server.fly.dev/time_agent/docs"
+      provider:
+        organization: "chrishayuk"
+        url: "https://chrishayuk.io"
+      capabilities:
+        streaming: true
+        pushNotifications: false
+        tools: false  # Will show true when MCP tools enabled
+        sessions: false
+      authentication:
+        schemes:
+          - "None"
+      defaultInputModes:
+        - "text/plain"
+      defaultOutputModes:
+        - "text/plain"
+      skills:
+        - id: time-assistance
+          name: Time & Timezone Help
+          description: "Current time, timezone conversions, and scheduling assistance"
+          tags:
+            - time
+            - timezone
+            - scheduling
+            - utility
+          examples:
+            - "What time is it in Tokyo?"
+            - "Current time in New York"
+            - "What's the time difference between London and LA?"
+            - "Convert 3 PM EST to Pacific time"
+
+  # 🔧 LEGACY: Google ADK Agents (kept for compatibility and comparison)
   pirate_agent:
     type: a2a_server.tasks.handlers.adk.google_adk_handler.GoogleADKHandler
     agent: a2a_server.sample_agents.pirate_agent.pirate_agent
     name: pirate_agent
+    use_sessions: false  # Stateless by design
     agent_card:
-      name: Pirate Agent
-      description: "Converts your text into salty pirate-speak"
+      name: Pirate Agent (Legacy)
+      description: "Simple pirate-speak converter without memory"
       url: "https://a2a-server.fly.dev/pirate_agent"
       version: "0.1.0"
       documentationUrl: "https://a2a-server.fly.dev/pirate_agent/docs"
@@ -48,6 +275,7 @@ handlers:
       capabilities:
         streaming: true
         pushNotifications: false
+        sessions: false
       authentication:
         schemes:
           - "None"
@@ -58,20 +286,24 @@ handlers:
       skills:
         - id: pirate-talk
           name: Pirate Talk
-          description: "Turn any message into pirate lingo"
+          description: "Transform any message into swashbuckling pirate lingo (stateless)"
           tags:
             - pirate
             - fun
+            - language
+            - legacy
           examples:
+            - "Turn this into pirate speak: Hello there!"
             - "Arrr! Give me yer loot!"
 
   chef_agent:
     type: a2a_server.tasks.handlers.adk.google_adk_handler.GoogleADKHandler
     agent: a2a_server.sample_agents.chef_agent.chef_agent
     name: chef_agent
+    use_sessions: false  # Keep simple for comparison
     agent_card:
-      name: Chef Agent
-      description: "Suggests delicious recipes from your ingredients"
+      name: Chef Agent (Legacy)
+      description: "Simple recipe suggestions without memory"
       url: "https://a2a-server.fly.dev/chef_agent"
       version: "0.1.0"
       documentationUrl: "https://a2a-server.fly.dev/chef_agent/docs"
@@ -81,6 +313,7 @@ handlers:
       capabilities:
         streaming: true
         pushNotifications: false
+        sessions: false
       authentication:
         schemes:
           - "None"
@@ -91,29 +324,71 @@ handlers:
       skills:
         - id: recipe-generation
           name: Recipe Generation
-          description: "Suggest recipes based on ingredients"
+          description: "Quick recipe suggestions based on ingredients (stateless)"
           tags:
             - cooking
             - recipes
+            - quick
+            - legacy
           examples:
             - "What can I make with chicken, mushrooms, and rice?"
+            - "Quick dinner ideas"
 
+  # 🎯 DEMO: Specialized handlers (optional - remove if not needed)
   time_ticker:
     type: a2a_server.tasks.handlers.time_ticker_handler.TimeTickerHandler
     name: time_ticker
-    url: "https://a2a-server.fly.dev/time_ticker"
     agent_card:
       name: Time Ticker
-      description: Streams the current time for 10 seconds
-      capabilities: { streaming: true }
+      description: "Demonstrates streaming by showing current time for 10 seconds"
+      url: "https://a2a-server.fly.dev/time_ticker"
+      version: "1.0.0"
+      capabilities:
+        streaming: true
+        pushNotifications: false
+      defaultInputModes:
+        - "text/plain"
+      defaultOutputModes:
+        - "text/plain"
+      skills:
+        - id: time-stream
+          name: Time Stream Demo
+          description: "Stream current time updates for demonstration"
+          tags:
+            - demo
+            - streaming
+            - time
+          examples:
+            - "Show me the time stream"
+            - "Start time ticker"
 
   pirate_vision:
     type: a2a_server.tasks.handlers.pirate_vision_handler.PirateVisionHandler
     name: pirate_vision
     agent_card:
       name: Pirate Vision
-      # modes tell the client what to send/expect
-      defaultInputModes:  ["image_base64"]
-      defaultOutputModes: ["text/plain"]
-      description: Looks at image and sends something back in pirate speak (base64)
-      capabilities: { streaming: true }
+      description: "Analyzes images and describes them in colorful pirate language"
+      url: "https://a2a-server.fly.dev/pirate_vision"
+      version: "1.0.0"
+      capabilities:
+        streaming: true
+        vision: true
+        pushNotifications: false
+      defaultInputModes:
+        - "image_base64"
+        - "image/png"
+        - "image/jpeg"
+      defaultOutputModes:
+        - "text/plain"
+      skills:
+        - id: image-analysis
+          name: Pirate Image Analysis
+          description: "Describe images using pirate vocabulary and flair"
+          tags:
+            - vision
+            - pirate
+            - image-analysis
+            - demo
+          examples:
+            - "What do you see in this image, matey?"
+            - "Describe this picture like a pirate"

@@ -82,7 +82,7 @@ class ResilientHandler(SessionAwareTaskHandler):
             # Force session sharing to True when shared_sandbox_group is provided
             self.session_sharing = True
             effective_sandbox_id = self.shared_sandbox_group
-            logger.info(f"Session sharing enabled: using shared sandbox '{effective_sandbox_id}' instead of '{sandbox_id}'")
+            logger.debug(f"Session sharing enabled: using shared sandbox '{effective_sandbox_id}' instead of '{sandbox_id}'")
         else:
             # Use provided sandbox_id or generate default
             self.session_sharing = session_sharing if session_sharing is not None else False
@@ -126,20 +126,35 @@ class ResilientHandler(SessionAwareTaskHandler):
             session_type = "SHARED" if self.session_sharing else "ISOLATED"
             session_info = f"group: {self.shared_sandbox_group}" if self.session_sharing else f"sandbox: {self.sandbox_id}"
             
-            logger.info(f"Initialized resilient handler '{self._name}' with {self._agent_interface} interface and {session_type} sessions ({session_info})")
+            logger.debug(f"Initialized resilient handler '{self._name}' with {self._agent_interface} interface and {session_type} sessions ({session_info})")
             
             # Start recovery monitoring
             self._recovery_task = asyncio.create_task(self._recovery_monitor())
     
     def _load_agent(self, agent_spec):
-        """Load agent from specification."""
+        """
+        Load agent from specification.
+        
+        🔧 CRITICAL FIX: Don't automatically call callable objects.
+        Let subclasses (like ChukAgentHandler) handle factory function calls with parameters.
+        """
         if agent_spec is None:
             logger.error("Agent specification is None")
             return None
         
-        # If already an instance, use directly
-        if hasattr(agent_spec, '__class__'):
+        # If already an instance (has attributes but isn't callable), use directly
+        if (hasattr(agent_spec, '__class__') and 
+            not callable(agent_spec) and 
+            (hasattr(agent_spec, 'name') or hasattr(agent_spec, 'process_task') or hasattr(agent_spec, 'invoke'))):
+            logger.debug(f"Using agent instance directly: {type(agent_spec)}")
             return agent_spec
+        
+        # 🔧 CRITICAL FIX: If it's a callable (factory function), DON'T call it here
+        # Let the subclass (ChukAgentHandler) handle it with proper parameters
+        if callable(agent_spec):
+            logger.debug(f"Agent is callable (factory function): {agent_spec}")
+            logger.debug(f"Will be processed by subclass with YAML parameters")
+            return agent_spec  # ← Return the function itself, don't call it
         
         # If string, try to import
         if isinstance(agent_spec, str):
@@ -148,6 +163,7 @@ class ResilientHandler(SessionAwareTaskHandler):
                 module_path, _, attr = agent_spec.rpartition('.')
                 module = importlib.import_module(module_path)
                 agent_instance = getattr(module, attr)
+                logger.debug(f"Imported agent from string: {agent_spec}")
                 return agent_instance
             except (ImportError, AttributeError) as e:
                 logger.error(f"Failed to import agent from '{agent_spec}': {e}")
@@ -160,6 +176,14 @@ class ResilientHandler(SessionAwareTaskHandler):
         """Detect agent name from the agent instance."""
         if self.agent is None:
             return "unknown_agent"
+        
+        # If agent is a callable (factory function), try to get name from function
+        if callable(self.agent):
+            func_name = getattr(self.agent, '__name__', 'unknown_function')
+            if func_name.startswith('create_'):
+                # Extract agent name from factory function name
+                return func_name.replace('create_', '').replace('_agent', '')
+            return func_name.replace('_', '')
             
         if hasattr(self.agent, 'name'):
             return str(self.agent.name)
@@ -180,6 +204,11 @@ class ResilientHandler(SessionAwareTaskHandler):
             logger.error("Cannot detect interface - agent is None")
             return "unknown"
         
+        # If agent is a callable (factory function), we can't detect interface yet
+        if callable(self.agent):
+            logger.debug(f"Agent is callable (factory function) - interface will be detected after instantiation")
+            return "function"
+        
         # Check for each interface in order of preference
         interfaces_to_check = [
             ('process_task', 'process_task'),
@@ -196,14 +225,14 @@ class ResilientHandler(SessionAwareTaskHandler):
                 if hasattr(self.agent, method_name):
                     method = getattr(self.agent, method_name)
                     if callable(method):
-                        logger.info(f"Detected {interface_name} interface for agent {self._detect_agent_name()}")
+                        logger.debug(f"Detected {interface_name} interface for agent {self._detect_agent_name()}")
                         return interface_name
             except Exception as e:
                 logger.debug(f"Error checking for {method_name}: {e}")
         
         # Special check for ADK agents - they might be wrapped
         if self._is_adk_agent(self.agent):
-            logger.info(f"Detected ADK agent type for {self._detect_agent_name()}")
+            logger.debug(f"Detected ADK agent type for {self._detect_agent_name()}")
             return "adk_agent"
         
         logger.error(f"Could not detect interface for agent {self._detect_agent_name()}")
@@ -212,6 +241,10 @@ class ResilientHandler(SessionAwareTaskHandler):
     def _is_adk_agent(self, agent) -> bool:
         """Check if this is an ADK agent by examining its class hierarchy."""
         try:
+            # If agent is callable, we can't determine this yet
+            if callable(agent):
+                return False
+                
             # Check for ADK agent class names or modules
             class_name = agent.__class__.__name__
             module_name = agent.__class__.__module__
@@ -238,6 +271,10 @@ class ResilientHandler(SessionAwareTaskHandler):
     @property
     def supported_content_types(self) -> List[str]:
         """Get supported content types."""
+        # If agent is callable, return default
+        if callable(self.agent):
+            return ["text/plain", "multipart/mixed"]
+            
         if hasattr(self.agent, 'supported_content_types'):
             return self.agent.supported_content_types
         elif hasattr(self.agent, 'SUPPORTED_CONTENT_TYPES'):
@@ -280,7 +317,7 @@ class ResilientHandler(SessionAwareTaskHandler):
         self.health.last_recovery_attempt = current_time
         self.health.recovery_attempts += 1
         
-        logger.info(f"Attempting recovery for handler {self._name} (attempt {self.health.recovery_attempts})")
+        logger.debug(f"Attempting recovery for handler {self._name} (attempt {self.health.recovery_attempts})")
         
         try:
             self.health.state = HandlerState.RECOVERING
@@ -288,38 +325,43 @@ class ResilientHandler(SessionAwareTaskHandler):
             # Try generic recovery methods
             recovery_successful = False
             
-            # Method 1: Try initialize_tools (common for tool-based agents)
-            if hasattr(self.agent, 'initialize_tools'):
-                try:
-                    await self.agent.initialize_tools()
-                    recovery_successful = True
-                except Exception as e:
-                    logger.debug(f"initialize_tools failed: {e}")
-            
-            # Method 2: Try initialize (general initialization)
-            if not recovery_successful and hasattr(self.agent, 'initialize'):
-                try:
-                    await self.agent.initialize()
-                    recovery_successful = True
-                except Exception as e:
-                    logger.debug(f"initialize failed: {e}")
-            
-            # Method 3: ADK-specific recovery
-            if not recovery_successful and self._is_adk_agent(self.agent):
-                try:
-                    # ADK agents are typically stateless, so just mark as recovered
-                    recovery_successful = True
-                except Exception as e:
-                    logger.debug(f"ADK recovery failed: {e}")
+            # Skip recovery if agent is still a callable (not instantiated yet)
+            if callable(self.agent):
+                logger.debug(f"Agent is callable - recovery will be handled after instantiation")
+                recovery_successful = True
+            else:
+                # Method 1: Try initialize_tools (common for tool-based agents)
+                if hasattr(self.agent, 'initialize_tools'):
+                    try:
+                        await self.agent.initialize_tools()
+                        recovery_successful = True
+                    except Exception as e:
+                        logger.debug(f"initialize_tools failed: {e}")
+                
+                # Method 2: Try initialize (general initialization)
+                if not recovery_successful and hasattr(self.agent, 'initialize'):
+                    try:
+                        await self.agent.initialize()
+                        recovery_successful = True
+                    except Exception as e:
+                        logger.debug(f"initialize failed: {e}")
+                
+                # Method 3: ADK-specific recovery
+                if not recovery_successful and self._is_adk_agent(self.agent):
+                    try:
+                        # ADK agents are typically stateless, so just mark as recovered
+                        recovery_successful = True
+                    except Exception as e:
+                        logger.debug(f"ADK recovery failed: {e}")
             
             if recovery_successful:
                 self.health.state = HandlerState.HEALTHY
                 self.health.consecutive_failures = 0
                 self.health.circuit_opened_at = None
-                logger.info(f"Recovery successful for handler {self._name}")
+                logger.debug(f"Recovery successful for handler {self._name}")
             else:
                 self.health.state = HandlerState.FAILED
-                logger.warning(f"Recovery failed for handler {self._name}")
+                logger.debug(f"Recovery failed for handler {self._name}")
                     
         except Exception as e:
             logger.error(f"Recovery failed for handler {self._name}: {e}")
@@ -384,7 +426,7 @@ class ResilientHandler(SessionAwareTaskHandler):
                         final=False
                     )
                 elif attempt > 0:
-                    logger.info(f"Retrying task {task_id} for {self._name} (attempt {attempt + 1})")
+                    logger.debug(f"Retrying task {task_id} for {self._name} (attempt {attempt + 1})")
                 
                 # Process with timeout
                 async with asyncio.timeout(self.task_timeout):
@@ -453,6 +495,12 @@ class ResilientHandler(SessionAwareTaskHandler):
     ) -> AsyncGenerator:
         """Delegate task processing to the appropriate agent interface."""
         
+        # 🔧 CRITICAL FIX: Handle callable agents (should not happen in ResilientHandler)
+        if callable(self.agent):
+            logger.error(f"Agent is still callable - this should have been handled by subclass!")
+            logger.error(f"Agent function: {self.agent}")
+            raise RuntimeError(f"Agent {self._name} is still a callable function - parameter processing failed")
+        
         if self._agent_interface == "process_task":
             async for event in self.agent.process_task(task_id, message, session_id):
                 yield event
@@ -477,6 +525,10 @@ class ResilientHandler(SessionAwareTaskHandler):
             async for event in self._adapt_adk_agent(task_id, message, session_id):
                 yield event
                 
+        elif self._agent_interface == "function":
+            logger.error(f"Agent is still a function - this indicates parameter processing failed")
+            raise RuntimeError(f"Agent {self._name} was not properly instantiated from factory function")
+            
         else:
             raise RuntimeError(f"Agent {self._name} has unsupported interface: {self._agent_interface}")
     
@@ -491,20 +543,20 @@ class ResilientHandler(SessionAwareTaskHandler):
             user_content = self._extract_message_content(message)
             
             # CROSS-AGENT SESSION DEBUG - FIXED VERSION
-            logger.info(f"🔍 CROSS-AGENT SESSION DEBUG for {self._name}")
-            logger.info(f"🔍 Session ID: {session_id}")
-            logger.info(f"🔍 Handler sandbox: {self.sandbox_id}")
-            logger.info(f"🔍 Session sharing: {self.session_sharing}")
-            logger.info(f"🔍 Shared sandbox group: {self.shared_sandbox_group}")
-            logger.info(f"🔍 User content: {user_content}")
+            logger.debug(f"🔍 CROSS-AGENT SESSION DEBUG for {self._name}")
+            logger.debug(f"🔍 Session ID: {session_id}")
+            logger.debug(f"🔍 Handler sandbox: {self.sandbox_id}")
+            logger.debug(f"🔍 Session sharing: {self.session_sharing}")
+            logger.debug(f"🔍 Shared sandbox group: {self.shared_sandbox_group}")
+            logger.debug(f"🔍 User content: {user_content}")
             
             # *** FIXED: Proper session sharing detection for external CHUK storage ***
-            logger.info(f"🔍 SessionAwareTaskHandler uses external CHUK storage (no _shared_sessions)")
+            logger.debug(f"🔍 SessionAwareTaskHandler uses external CHUK storage (no _shared_sessions)")
             
             # Check session sharing configuration
             if self.session_sharing:
                 target_sandbox = self.shared_sandbox_group or self.sandbox_id
-                logger.info(f"🔍 Using SHARED external sessions in sandbox: {target_sandbox}")
+                logger.debug(f"🔍 Using SHARED external sessions in sandbox: {target_sandbox}")
                 
                 # Try to get session manager to check if session exists
                 try:
@@ -512,15 +564,15 @@ class ResilientHandler(SessionAwareTaskHandler):
                     if ai_session:
                         logger.info(f"🔍 Successfully created AI session manager for: {session_id}")
                     else:
-                        logger.warning(f"🔍 Failed to create AI session manager for: {session_id}")
+                        logger.debug(f"🔍 Failed to create AI session manager for: {session_id}")
                 except Exception as e:
-                    logger.warning(f"🔍 Error creating AI session manager: {e}")
+                    logger.debug(f"🔍 Error creating AI session manager: {e}")
             else:
-                logger.info(f"🔍 Using ISOLATED external sessions in sandbox: {self.sandbox_id}")
+                logger.debug(f"🔍 Using ISOLATED external sessions in sandbox: {self.sandbox_id}")
             
             # Debug session statistics
             session_stats = self.get_session_stats()
-            logger.info(f"🔍 Session stats: {session_stats}")
+            logger.debug(f"🔍 Session stats: {session_stats}")
             
             # Initialize tools if available
             if hasattr(self.agent, 'initialize_tools'):
@@ -528,34 +580,34 @@ class ResilientHandler(SessionAwareTaskHandler):
             
             # **CRITICAL FIX: Get conversation context from handler's session management**
             context_messages = await self.get_conversation_context(session_id, max_messages=20)
-            logger.info(f"🔍 Retrieved {len(context_messages)} context messages from external CHUK storage")
+            logger.debug(f"🔍 Retrieved {len(context_messages)} context messages from external CHUK storage")
             
             # Debug context messages in detail
             if context_messages:
-                logger.info(f"🔍 Context messages preview:")
+                logger.debug(f"🔍 Context messages preview:")
                 for i, ctx_msg in enumerate(context_messages[-5:]):  # Show last 5
                     role = ctx_msg.get('role', 'unknown')
                     content = ctx_msg.get('content', '')[:100]
-                    logger.info(f"🔍   Context {i}: {role} - {content}...")
+                    logger.debug(f"🔍   Context {i}: {role} - {content}...")
             else:
-                logger.warning(f"🔍 No context messages found - checking why...")
+                logger.debug(f"🔍 No context messages found - checking why...")
                 
                 # Debug: Try to get full conversation history
                 full_history = await self.get_conversation_history(session_id)
-                logger.info(f"🔍 Full conversation history length: {len(full_history)}")
+                logger.debug(f"🔍 Full conversation history length: {len(full_history)}")
                 
                 if not full_history:
-                    logger.warning(f"🔍 No conversation history found for session {session_id}")
-                    logger.warning(f"🔍 This suggests the session either doesn't exist or hasn't been created yet")
+                    logger.debug(f"🔍 No conversation history found for session {session_id}")
+                    logger.debug(f"🔍 This suggests the session either doesn't exist or hasn't been created yet")
                 
                 # Check if we can access the AI session manager directly
                 try:
                     ai_session = await self._get_ai_session_manager(session_id)
                     if ai_session:
-                        logger.info(f"🔍 AI session manager created successfully")
+                        logger.debug(f"🔍 AI session manager created successfully")
                         # Try to get conversation directly
                         direct_conversation = await ai_session.get_conversation()
-                        logger.info(f"🔍 Direct conversation query returned {len(direct_conversation)} messages")
+                        logger.debug(f"🔍 Direct conversation query returned {len(direct_conversation)} messages")
                     else:
                         logger.error(f"🔍 Failed to create AI session manager")
                 except Exception as e:
@@ -564,9 +616,9 @@ class ResilientHandler(SessionAwareTaskHandler):
             # Check session sharing configuration one more time
             if hasattr(self, 'session_sharing') and self.session_sharing:
                 shared_group = getattr(self, 'shared_sandbox_group', 'unknown')
-                logger.info(f"🔍 Session sharing ENABLED - shared group: {shared_group}")
+                logger.debug(f"🔍 Session sharing ENABLED - shared group: {shared_group}")
             else:
-                logger.info(f"🔍 Session sharing DISABLED - isolated sandbox: {self.sandbox_id}")
+                logger.debug(f"🔍 Session sharing DISABLED - isolated sandbox: {self.sandbox_id}")
             
             # Build messages for completion
             messages = []
@@ -583,19 +635,19 @@ class ResilientHandler(SessionAwareTaskHandler):
             
             # **KEY FIX: Add conversation context from handler's shared sessions**
             messages.extend(context_messages)
-            logger.info(f"🔍 Added {len(context_messages)} context messages to agent input")
+            logger.debug(f"🔍 Added {len(context_messages)} context messages to agent input")
             
             # Add current message
             messages.append({"role": "user", "content": user_content})
             
-            logger.info(f"🔍 Total messages to agent: {len(messages)}")
+            logger.debug(f"🔍 Total messages to agent: {len(messages)}")
             
             # Use complete method - agent will see full conversation history
             result = await self.agent.complete(messages, use_tools=True, session_id=session_id)
             
             # Convert result to A2A artifacts
             content = result.get("content", "No response generated")
-            logger.info(f"🔍 Agent response: {content[:100]}...")
+            logger.debug(f"🔍 Agent response: {content[:100]}...")
             
             # Emit tool artifacts if tools were used
             if result.get("tool_calls"):
@@ -704,7 +756,7 @@ class ResilientHandler(SessionAwareTaskHandler):
         try:
             user_content = self._extract_message_content(message)
             
-            logger.info(f"Adapting ADK agent {self._name} with content: {user_content[:100]}...")
+            logger.debug(f"Adapting ADK agent {self._name} with content: {user_content[:100]}...")
             
             # Try different ADK interfaces in order of preference
             result = None
@@ -713,7 +765,7 @@ class ResilientHandler(SessionAwareTaskHandler):
             if hasattr(self.agent, 'invoke'):
                 try:
                     result = await asyncio.to_thread(self.agent.invoke, user_content, session_id)
-                    logger.info(f"ADK agent used invoke method")
+                    logger.debug(f"ADK agent used invoke method")
                 except Exception as e:
                     logger.debug(f"ADK invoke failed: {e}")
             
@@ -742,7 +794,7 @@ class ResilientHandler(SessionAwareTaskHandler):
                             p.text for p in events[-1].content.parts 
                             if getattr(p, "text", None)
                         )
-                        logger.info(f"ADK agent used run_async method")
+                        logger.debug(f"ADK agent used run_async method")
                     
                 except Exception as e:
                     logger.debug(f"ADK run_async failed: {e}")
@@ -770,7 +822,7 @@ class ResilientHandler(SessionAwareTaskHandler):
                             p.text for p in events[-1].content.parts 
                             if getattr(p, "text", None)
                         )
-                        logger.info(f"ADK agent used run_live method")
+                        logger.debug(f"ADK agent used run_live method")
                     
                 except Exception as e:
                     logger.debug(f"ADK run_live failed: {e}")
@@ -782,7 +834,7 @@ class ResilientHandler(SessionAwareTaskHandler):
                     result = f"I'm {instruction}. You asked: {user_content}\n\nI apologize, but I'm having trouble processing your request right now."
                 else:
                     result = "I apologize, but I'm having trouble processing your request right now."
-                logger.warning(f"ADK agent fallback used for {self._name}")
+                logger.debug(f"ADK agent fallback used for {self._name}")
             
             logger.info(f"ADK agent response: {result[:100]}...")
             
@@ -814,7 +866,7 @@ class ResilientHandler(SessionAwareTaskHandler):
         
         if self.health.state in [HandlerState.DEGRADED, HandlerState.RECOVERING]:
             self.health.state = HandlerState.HEALTHY
-            logger.info(f"Handler {self._name} recovered")
+            logger.debug(f"Handler {self._name} recovered")
     
     def _record_task_failure(self, error: str):
         """Record a failed task and update circuit breaker."""
@@ -826,7 +878,7 @@ class ResilientHandler(SessionAwareTaskHandler):
         if self.health.consecutive_failures >= self.circuit_breaker_threshold:
             self.health.state = HandlerState.CIRCUIT_OPEN
             self.health.circuit_opened_at = time.time()
-            logger.warning(f"Circuit breaker opened for handler {self._name} after {self.health.consecutive_failures} failures")
+            logger.debug(f"Circuit breaker opened for handler {self._name} after {self.health.consecutive_failures} failures")
         else:
             self.health.state = HandlerState.DEGRADED
     
@@ -865,7 +917,7 @@ class ResilientHandler(SessionAwareTaskHandler):
     def get_health_status(self) -> Dict[str, Any]:
         """Get comprehensive health status."""
         agent_health = {}
-        if hasattr(self.agent, 'get_health_status'):
+        if self.agent and hasattr(self.agent, 'get_health_status'):
             try:
                 agent_health = self.agent.get_health_status()
             except Exception as e:
@@ -912,7 +964,7 @@ class ResilientHandler(SessionAwareTaskHandler):
             except asyncio.CancelledError:
                 pass
         
-        if hasattr(self.agent, 'shutdown'):
+        if self.agent and hasattr(self.agent, 'shutdown'):
             try:
                 await self.agent.shutdown()
             except Exception as e:

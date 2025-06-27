@@ -175,7 +175,40 @@ def create_app(
             logger.info("Registered handler %s%s", h.name, " (default)" if h is default else "")
     elif use_discovery:
         logger.info("Using discovery for handlers in %s", handler_packages)
-        register_discovered_handlers(task_manager, packages=handler_packages, extra_kwargs={"session_store": session_store})
+        
+        # 🔧 CRITICAL FIX: Extract and pass handler configurations from YAML
+        handler_configs = {}
+        if handlers_config:
+            handler_configs = {
+                k: v for k, v in handlers_config.items() 
+                if k not in ['use_discovery', 'default_handler'] and isinstance(v, dict)
+            }
+            logger.debug(f"🔧 Passing {len(handler_configs)} handler configurations to discovery")
+            logger.debug(f"🔧 Handler configs: {list(handler_configs.keys())}")
+        
+        register_discovered_handlers(
+            task_manager, 
+            packages=handler_packages, 
+            extra_kwargs={"session_store": session_store},
+            **handler_configs  # 🔧 CRITICAL: This passes your YAML handler configs
+        )
+    elif handlers_config:
+        # 🔧 NEW: Handle explicit handler configurations when discovery is disabled
+        logger.info("Registering explicit handlers from configuration")
+        
+        handler_configs = {
+            k: v for k, v in handlers_config.items() 
+            if k not in ['use_discovery', 'default_handler'] and isinstance(v, dict)
+        }
+        
+        logger.debug(f"🔧 Found {len(handler_configs)} handler configurations: {list(handler_configs.keys())}")
+        
+        register_discovered_handlers(
+            task_manager,
+            packages=None,  # No package discovery
+            extra_kwargs={"session_store": session_store},
+            **handler_configs  # Pass YAML configurations
+        )
     else:
         logger.info("No handlers specified → using EchoHandler")
         task_manager.register_handler(EchoHandler(), default=True)

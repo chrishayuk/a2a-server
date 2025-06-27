@@ -39,7 +39,7 @@ class ChukAgentHandler(ResilientHandler):
         Initialize ChukAgent handler with optimized settings and session sharing support.
         
         Args:
-            agent: ChukAgent instance or import path
+            agent: ChukAgent instance or import path or factory function
             name: Handler name (auto-detected if None)
             circuit_breaker_threshold: Failures before circuit opens (default: 2)
             circuit_breaker_timeout: Circuit open time (default: 60s)
@@ -49,8 +49,14 @@ class ChukAgentHandler(ResilientHandler):
             sandbox_id: Session sandbox ID for isolated sessions
             session_sharing: Enable cross-agent session sharing (default: None = auto-detect)
             shared_sandbox_group: Shared sandbox group name for cross-agent sessions
-            **kwargs: Additional arguments
+            **kwargs: Additional arguments (including agent factory parameters)
         """
+        
+        # 🔧 NEW: Handle agent factory function with parameters
+        processed_agent = self._process_agent_with_params(agent, kwargs)
+        
+        # Extract handler-specific parameters and remove agent factory parameters
+        handler_kwargs = self._extract_handler_params(kwargs)
         
         # *** KEY FIX: Explicit session sharing detection ***
         if shared_sandbox_group and session_sharing is None:
@@ -60,7 +66,7 @@ class ChukAgentHandler(ResilientHandler):
         
         # *** KEY FIX: Pass session sharing parameters to parent ***
         super().__init__(
-            agent=agent,
+            agent=processed_agent,  # Use the processed agent (with parameters applied)
             name=name or "chuk_agent",
             circuit_breaker_threshold=circuit_breaker_threshold,
             circuit_breaker_timeout=circuit_breaker_timeout,
@@ -70,7 +76,7 @@ class ChukAgentHandler(ResilientHandler):
             sandbox_id=sandbox_id,
             session_sharing=session_sharing,
             shared_sandbox_group=shared_sandbox_group,
-            **kwargs
+            **handler_kwargs  # Only pass handler-specific parameters
         )
         
         # Log session sharing configuration
@@ -78,6 +84,108 @@ class ChukAgentHandler(ResilientHandler):
             logger.info(f"Initialized ChukAgentHandler '{self._name}' with SHARED sessions (group: {self.shared_sandbox_group})")
         else:
             logger.info(f"Initialized ChukAgentHandler '{self._name}' with ISOLATED sessions (sandbox: {self.sandbox_id})")
+
+    def _process_agent_with_params(self, agent, kwargs):
+        """
+        Process the agent parameter, handling factory functions with parameters.
+        
+        Args:
+            agent: Agent instance, import path, or factory function
+            kwargs: All configuration parameters from YAML
+            
+        Returns:
+            Processed agent instance
+        """
+        # If agent is callable (factory function), call it with appropriate parameters
+        if callable(agent):
+            agent_params = self._extract_agent_params(kwargs)
+            logger.info(f"🔧 Calling agent factory with parameters: {list(agent_params.keys())}")
+            logger.debug(f"🔧 Agent factory parameters: {agent_params}")
+            
+            try:
+                processed_agent = agent(**agent_params)
+                logger.info(f"✅ Successfully created agent via factory function")
+                return processed_agent
+            except Exception as e:
+                logger.error(f"❌ Failed to create agent via factory function: {e}")
+                raise
+        else:
+            # Agent is already an instance or import path, use as-is
+            logger.info(f"🔧 Using agent directly (not a factory function)")
+            return agent
+
+    def _extract_agent_params(self, kwargs):
+        """
+        Extract parameters that should be passed to the agent factory function.
+        
+        Args:
+            kwargs: All configuration parameters from YAML
+            
+        Returns:
+            Dictionary of parameters for agent factory
+        """
+        # Define which parameters should be passed to the agent factory
+        agent_param_keys = {
+            # Session management parameters
+            'enable_sessions',
+            'infinite_context', 
+            'token_threshold',
+            'max_turns_per_segment',
+            'session_ttl_hours',
+            
+            # Model parameters
+            'provider',
+            'model',
+            'streaming',
+            
+            # Tool parameters
+            'enable_tools',
+            'debug_tools',
+            
+            # MCP parameters
+            'mcp_transport',
+            'mcp_config_file',
+            'mcp_servers',
+            'mcp_sse_servers',
+            'tool_namespace',
+            'max_concurrency',
+            'tool_timeout',
+            
+            # Other agent-specific parameters
+            'description',
+            'instruction',
+            'use_system_prompt_generator',
+        }
+        
+        # Extract only the parameters that should go to the agent factory
+        agent_params = {k: v for k, v in kwargs.items() if k in agent_param_keys}
+        
+        logger.debug(f"🔧 Extracted {len(agent_params)} agent parameters from {len(kwargs)} total kwargs")
+        return agent_params
+
+    def _extract_handler_params(self, kwargs):
+        """
+        Extract parameters that should be passed to the handler (not agent factory).
+        
+        Args:
+            kwargs: All configuration parameters from YAML
+            
+        Returns:
+            Dictionary of parameters for handler
+        """
+        # Define which parameters are for the agent factory (to exclude)
+        agent_param_keys = {
+            'enable_sessions', 'infinite_context', 'token_threshold', 'max_turns_per_segment',
+            'session_ttl_hours', 'provider', 'model', 'streaming', 'enable_tools', 'debug_tools',
+            'mcp_transport', 'mcp_config_file', 'mcp_servers', 'mcp_sse_servers', 'tool_namespace',
+            'max_concurrency', 'tool_timeout', 'description', 'instruction', 'use_system_prompt_generator'
+        }
+        
+        # Return only non-agent parameters
+        handler_params = {k: v for k, v in kwargs.items() if k not in agent_param_keys}
+        
+        logger.debug(f"🔧 Extracted {len(handler_params)} handler parameters from {len(kwargs)} total kwargs")
+        return handler_params
 
 
 # Backward compatibility alias

@@ -4,10 +4,8 @@ from __future__ import annotations
 """Async-native CLI entry-point for the A2A server."""
 import logging
 import os
-from typing import Optional
 
 # Set up quiet logging IMMEDIATELY before any other imports
-logging.getLogger('a2a_server.tasks.discovery').setLevel(logging.ERROR)
 logging.getLogger('chuk_sessions.session_manager').setLevel(logging.WARNING)
 logging.getLogger('chuk_ai_session_manager.session_storage').setLevel(logging.WARNING)
 logging.getLogger('asyncio').setLevel(logging.ERROR)
@@ -29,23 +27,25 @@ __all__ = ["_build_app", "_serve", "run_server"]
 
 def _build_app(cfg: dict, args) -> FastAPI:  # noqa: ANN001 - CLI helper
     """Instantiate a FastAPI app according to *cfg*."""
-    # Import these AFTER early logging is set
-    from a2a_server.handlers_setup import setup_handlers
     from a2a_server.app import create_app
     
     handlers_cfg = cfg["handlers"]
+    use_discovery = handlers_cfg.get("use_discovery", False)
 
-    all_handlers, default = setup_handlers(handlers_cfg)
-    use_discovery = handlers_cfg.get("use_discovery", True)
-
-    handlers_list: Optional[list] = (
-        [default] + [h for h in all_handlers if h is not default]
-        if default
-        else all_handlers or None
-    )
-
+    # Extract handler configurations for clean logging
+    handler_configs = {
+        k: v for k, v in handlers_cfg.items() 
+        if k not in ['use_discovery', 'default_handler', 'handler_packages'] and isinstance(v, dict)
+    }
+    
+    logger = logging.getLogger(__name__)
+    logger.info(f"Configuring A2A server with {len(handler_configs)} handlers")
+    if use_discovery:
+        logger.info(f"Package discovery enabled for: {handlers_cfg.get('handler_packages', [])}")
+    
+    # Let app.py handle all handler registration
     return create_app(
-        handlers=handlers_list,
+        handlers=None,
         use_discovery=use_discovery,
         handler_packages=handlers_cfg.get("handler_packages"),
         handlers_config=handlers_cfg,
