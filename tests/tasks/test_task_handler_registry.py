@@ -1,6 +1,6 @@
 # tests/server/test_task_handler_registry.py
 import pytest
-from a2a_server.tasks.handlers.task_handler_registry import TaskHandlerRegistry
+from a2a_server.tasks.task_handler_registry import TaskHandlerRegistry
 from a2a_server.tasks.handlers.task_handler import TaskHandler
 
 # Create some test handlers

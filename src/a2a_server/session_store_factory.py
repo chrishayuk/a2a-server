@@ -26,6 +26,21 @@ logger = logging.getLogger(__name__)
 _session_managers: Dict[str, SessionManager] = {}
 _session_factory = None
 
+# Define supported parameters for AISessionManager
+AI_SESSION_MANAGER_PARAMS = {
+    'sandbox_id',
+    'session_sharing', 
+    'shared_sandbox_group',
+    'enable_sessions',
+    'infinite_context',
+    'token_threshold',
+    'max_turns_per_segment', 
+    'session_ttl_hours',
+    'streaming',
+    # Add other supported parameters as needed
+    # Remove unsupported ones like 'circuit_breaker_threshold'
+}
+
 def get_session_factory():
     """Get the global session factory (singleton)."""
     global _session_factory
@@ -122,6 +137,29 @@ def setup_ai_session_storage(
     logger.info("Setup AI session storage for sandbox: %s", final_sandbox_id)
 
 
+def _filter_session_config(session_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Filter session config to only include parameters supported by AISessionManager.
+    
+    This removes unsupported parameters like 'circuit_breaker_threshold' that
+    cause TypeError when passed to SessionManager.__init__().
+    
+    Args:
+        session_config: Raw session configuration
+        
+    Returns:
+        Filtered configuration with only supported parameters
+    """
+    filtered = {k: v for k, v in session_config.items() if k in AI_SESSION_MANAGER_PARAMS}
+    
+    # Log filtered out parameters for debugging
+    removed = set(session_config.keys()) - AI_SESSION_MANAGER_PARAMS
+    if removed:
+        logger.debug("Filtered out unsupported session parameters: %s", removed)
+    
+    return filtered
+
+
 def create_ai_session_manager(
     session_config: Dict[str, Any],
     session_context: Optional[str] = None
@@ -133,7 +171,7 @@ def create_ai_session_manager(
     that connects to the external storage. This ensures proper cross-server sharing.
     
     Args:
-        session_config: Session configuration
+        session_config: Session configuration (will be filtered for supported params)
         session_context: Optional context info for logging
         
     Returns:
@@ -141,7 +179,10 @@ def create_ai_session_manager(
     """
     from a2a_server.utils.session_setup import SessionSetup
     
-    manager = SessionSetup.create_ai_session_manager(session_config)
+    # Filter config to remove unsupported parameters like circuit_breaker_threshold
+    filtered_config = _filter_session_config(session_config)
+    
+    manager = SessionSetup.create_ai_session_manager(filtered_config)
     
     if session_context:
         logger.debug(f"🔧 Created AI session manager for: {session_context}")
@@ -166,7 +207,7 @@ def create_shared_ai_session_manager(
     Args:
         sandbox_id: Sandbox identifier for grouping related sessions
         session_id: Specific session identifier (e.g., user session)
-        session_config: Session configuration
+        session_config: Session configuration (will be filtered for supported params)
         
     Returns:
         New AISessionManager instance (connects to shared external storage)
@@ -192,7 +233,7 @@ def create_isolated_ai_session_manager(
     Args:
         sandbox_id: Sandbox identifier for this handler
         session_id: Specific session identifier
-        session_config: Session configuration
+        session_config: Session configuration (will be filtered for supported params)
         
     Returns:
         New AISessionManager instance (connects to isolated external storage)

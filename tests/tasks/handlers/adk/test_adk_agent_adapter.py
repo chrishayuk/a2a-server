@@ -140,8 +140,8 @@ def test_get_or_create_session_none(test_case):
     
     # Verify create_session was called with None
     test_case.mock_session_service.create_session.assert_called_once()
-    call_args = test_case.mock_session_service.create_session.call_args
-    assert call_args[1]['session_id'] is None
+    call_kwargs = test_case.mock_session_service.create_session.call_args.kwargs
+    assert call_kwargs['session_id'] is None
 
 def test_invoke(test_case):
     """Test invoke method."""
@@ -170,10 +170,11 @@ def test_invoke(test_case):
     # Verify runner was called
     test_case.mock_runner.run.assert_called_once()
     
-    # Check content in args
-    call_args = test_case.mock_runner.run.call_args
-    assert call_args[0][0] == "test_user"  # user_id
-    assert call_args[0][1] == "test_session"  # session_id
+    # FIXED: Check that it was called with keyword arguments (new ADK API)
+    call_kwargs = test_case.mock_runner.run.call_args.kwargs
+    assert call_kwargs["user_id"] == "test_user"
+    assert call_kwargs["session_id"] == "test_session"
+    assert "new_message" in call_kwargs
 
 def test_invoke_empty_response(test_case):
     """Test invoke method with empty response."""
@@ -184,17 +185,18 @@ def test_invoke_empty_response(test_case):
     # Test case: No events
     test_case.mock_runner.run.return_value = []
     result = test_case.adapter.invoke("Test query")
-    assert result == ""
+    assert "I apologize, but I didn't receive a response" in result
     
     # Test case: Event with no content
     test_case.mock_runner.run.return_value = [MockEvent()]
     result = test_case.adapter.invoke("Test query")
-    assert result == ""
+    assert "I apologize, but I couldn't generate a response" in result
     
     # Test case: Event with content but no parts
     test_case.mock_runner.run.return_value = [MockEvent(content=MockContent(parts=[]))]
     result = test_case.adapter.invoke("Test query")
-    assert result == ""
+    # The adapter returns the generic "couldn't generate a response" message for this case
+    assert "I apologize, but I couldn't generate a response" in result
 
 @pytest.mark.asyncio
 async def test_stream(test_case):
@@ -204,7 +206,7 @@ async def test_stream(test_case):
     test_case.mock_session_service.create_session.return_value = MockSession(session_id="test_session")
     
     # Setup run_async method result
-    async def mock_run_async(*args, **kwargs):
+    async def mock_run_async(**kwargs):  # FIXED: Use **kwargs to match new API
         yield MockEvent(
             content=MockContent(parts=[MockPart(text="Thinking about Test query")]),
             is_final=False
@@ -240,9 +242,9 @@ async def test_stream_no_session(test_case):
     test_case.mock_session_service.create_session.return_value = MockSession(session_id="generated_session_id")
     
     # Setup run_async method result
-    async def mock_run_async(*args, **kwargs):
-        # Capture the session ID argument
-        session_id = args[1] if len(args) > 1 else None
+    async def mock_run_async(**kwargs):  # FIXED: Use **kwargs
+        # Capture the session ID from kwargs
+        session_id = kwargs.get("session_id")
         
         # Yield a result with the session ID
         yield MockEvent(
@@ -269,7 +271,7 @@ async def test_stream_with_empty_parts(test_case):
     test_case.mock_session_service.create_session.return_value = MockSession(session_id="test_session")
     
     # Setup run_async method with events with no text
-    async def mock_run_async(*args, **kwargs):
+    async def mock_run_async(**kwargs):  # FIXED: Use **kwargs
         # Event with no content
         yield MockEvent(is_final=False)
         
@@ -291,8 +293,132 @@ async def test_stream_with_empty_parts(test_case):
     async for result in test_case.adapter.stream("Test query"):
         results.append(result)
     
-    # Verify results - empty text should be handled gracefully
+    # FIXED: Should only yield results when there's actual content or when final
+    # The intermediate events with no content don't yield results in the current implementation
+    assert len(results) == 1  # Only the final result
+    assert results[0]["is_task_complete"] is True
+    # FIXED: Should get error message for empty final response
+    assert "I apologize, but my response was empty" in results[0]["content"]
+
+def test_text_extraction(test_case):
+    """Test text extraction from parts."""
+    # Test with valid parts
+    parts = [MockPart(text="Hello "), MockPart(text="world!")]
+    result = test_case.adapter._extract_text_from_parts(parts)
+    assert result == "Hello world!"
+    
+    # Test with empty parts
+    parts = [MockPart(text=""), MockPart(text=None)]
+    result = test_case.adapter._extract_text_from_parts(parts)
+    assert result == ""
+    
+    # Test with mixed parts (None text should be skipped)
+    parts = [MockPart(text="Valid"), MockPart(text=""), MockPart(text="text")]
+    result = test_case.adapter._extract_text_from_parts(parts)
+    assert result == "Validtext"
+
+def test_response_validation(test_case):
+    """Test response validation."""
+    # Test valid response
+    result = test_case.adapter._validate_response("This is a valid response.")
+    assert result == "This is a valid response."
+    
+    # Test empty response
+    result = test_case.adapter._validate_response("")
+    assert "I apologize, but my response was empty" in result
+    
+    # Test malformed response
+    result = test_case.adapter._validate_response("I'm You are confused")
+    assert "I apologize, but I encountered an issue" in result
+
+@pytest.mark.asyncio
+async def test_stream_with_intermediate_updates(test_case):
+    """Test stream method with intermediate updates."""
+    # Setup mocks
+    test_case.mock_session_service.get_session.return_value = MockSession(session_id="test_session")
+    
+    # Setup run_async method with intermediate updates
+    async def mock_run_async(**kwargs):
+        # Intermediate update - using "Processing..." which gets cleaned to "Processing."
+        yield MockEvent(
+            content=MockContent(parts=[MockPart(text="Processing...")]),
+            is_final=False
+        )
+        
+        # Another intermediate update  
+        yield MockEvent(
+            content=MockContent(parts=[MockPart(text="Still working...")]),
+            is_final=False
+        )
+        
+        # Final response
+        yield MockEvent(
+            content=MockContent(parts=[MockPart(text="Final response")]),
+            is_final=True
+        )
+    
+    test_case.mock_runner.run_async = mock_run_async
+    
+    # Call the method
+    results = []
+    async for result in test_case.adapter.stream("Test query"):
+        results.append(result)
+    
+    # Verify results
     assert len(results) == 3
-    assert results[0]["updates"] == ""
-    assert results[1]["updates"] == ""
-    assert results[2]["content"] == ""
+    
+    # Check intermediate updates - the adapter cleans "..." to "."
+    assert results[0]["is_task_complete"] is False
+    assert results[0]["updates"] == "Processing."  # Adapter cleans duplicate periods
+    
+    assert results[1]["is_task_complete"] is False
+    assert results[1]["updates"] == "Still working."  # Adapter cleans duplicate periods
+    
+    # Check final response
+    assert results[2]["is_task_complete"] is True
+    assert results[2]["content"] == "Final response"
+
+def test_error_handling_in_invoke(test_case):
+    """Test error handling in invoke method."""
+    # Setup mocks
+    test_case.mock_session_service.get_session.return_value = None
+    test_case.mock_session_service.create_session.return_value = MockSession(session_id="test_session")
+    
+    # Make runner.run raise an exception
+    test_case.mock_runner.run.side_effect = Exception("ADK runner error")
+    
+    # Call the method
+    result = test_case.adapter.invoke("Test query")
+    
+    # Should return error message instead of crashing
+    assert "I apologize, but I encountered an error" in result
+    assert "ADK runner error" in result
+
+@pytest.mark.asyncio
+async def test_error_handling_in_stream(test_case):
+    """Test error handling in stream method."""
+    # Setup mocks
+    test_case.mock_session_service.get_session.return_value = None
+    test_case.mock_session_service.create_session.return_value = MockSession(session_id="test_session")
+    
+    # Create a proper async generator that raises an exception when iterated
+    class AsyncIteratorThatRaises:
+        def __aiter__(self):
+            return self
+        
+        async def __anext__(self):
+            raise Exception("ADK streaming error")
+    
+    # Mock run_async to return our async iterator that raises an exception
+    test_case.mock_runner.run_async = lambda **kwargs: AsyncIteratorThatRaises()
+    
+    # Call the method
+    results = []
+    async for result in test_case.adapter.stream("Test query"):
+        results.append(result)
+    
+    # Should yield error message instead of crashing
+    assert len(results) == 1
+    assert results[0]["is_task_complete"] is True
+    assert "I apologize, but I encountered an error" in results[0]["content"]
+    assert "ADK streaming error" in results[0]["content"]

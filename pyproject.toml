@@ -25,8 +25,9 @@ dependencies = [
   "opentelemetry-exporter-prometheus>=0.54b1",
   "aiofiles>=24.1.0",
   "chuk-llm>=0.8",
-  "chuk-tool-processor>=0.5",
   "chuk-ai-session-manager>=0.7.1",
+  "chuk-tool-processor>=0.5",
+  "httptools>=0.6.4",
 ]
 
 [project.optional-dependencies]

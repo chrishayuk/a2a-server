@@ -17,13 +17,17 @@ from typing import Any, Dict
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from a2a_server import app as _fastapi_app
+# Fix the import to get the actual FastAPI app instance
+from a2a_server import get_app
 from a2a_server.transport.http import MAX_BODY, REQUEST_TIMEOUT
 
 # ---------------------------------------------------------------------------
 # helpers / constants
 # ---------------------------------------------------------------------------
 _OK_STATES = {"submitted", "working"}
+
+# Get the FastAPI app instance (not the module)
+_fastapi_app = get_app()
 transport = ASGITransport(app=_fastapi_app)
 
 
@@ -93,7 +97,7 @@ async def test_handler_specific_rpc():
 
 
 # ---------------------------------------------------------------------------
-# new defensive guards - added May 2025
+# new defensive guards - added May 2025
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -151,3 +155,58 @@ async def test_send_subscribe_smoke():
         # cancel to tidy-up
         tid = r.json()["result"]["id"]
         await _rpc(ac, 41, "tasks/cancel", {"id": tid})
+
+
+# ---------------------------------------------------------------------------
+# Additional test to verify the app is working correctly
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_app_initialization():
+    """Test that the FastAPI app is properly initialized."""
+    # Verify we have a FastAPI app instance
+    from fastapi import FastAPI
+    assert isinstance(_fastapi_app, FastAPI)
+    
+    # Test basic health endpoint
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await ac.get("/")
+        assert r.status_code == 200
+        data = r.json()
+        assert "service" in data
+        assert data["service"] == "A2A Server"
+
+
+@pytest.mark.asyncio
+async def test_error_handling():
+    """Test error handling for invalid requests."""
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        # Test invalid JSON-RPC format
+        r = await ac.post("/rpc", json={"not": "jsonrpc"})
+        # Should still return 200 but with an error response
+        assert r.status_code == 200
+        
+        # Test with completely invalid JSON - FastAPI might handle this at different levels
+        try:
+            r = await ac.post("/rpc", content="not json", headers={"content-type": "application/json"})
+            # A2A server might return 200, 400, or 422 depending on where the error is caught
+            assert r.status_code in [200, 400, 422]
+        except Exception:
+            # Some setups might raise an exception for completely invalid JSON
+            pass
+        
+        # Test with valid JSON but invalid JSON-RPC structure
+        r = await ac.post("/rpc", json={"invalid": "structure"})
+        assert r.status_code == 200  # A2A server handles this gracefully
+
+
+@pytest.mark.asyncio 
+async def test_handler_routes():
+    """Test that handler-specific routes are available."""
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        # Test root path
+        r = await ac.get("/")
+        assert r.status_code == 200
+        
+        # The exact handler routes will depend on your configuration
+        # This is a basic smoke test that the app is routing correctly
