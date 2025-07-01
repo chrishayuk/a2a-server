@@ -154,11 +154,6 @@ def setup_http(
     """Mount default + per-handler JSON-RPC endpoints on *app*."""
 
     # ---- global middleware: body-size guard --------------------------------
-    @app.middleware("http")
-    async def _limit_body(request: Request, call_next):  # noqa: D401, ANN001
-        if int(request.headers.get("content-length", 0)) > MAX_BODY:
-            raise HTTPException(413, "Payload too large")
-        return await call_next(request)
 
     # ---- helpers -----------------------------------------------------------
     async def _dispatch(req: JSONRPCRequest) -> Response:
