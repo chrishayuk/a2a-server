@@ -48,7 +48,7 @@ class ADKAgentAdapter:
             memory_service=InMemoryMemoryService(),
         )
         
-        logger.info(f"🔧 ADK Adapter initialized for agent: {getattr(agent, 'name', 'unknown')}")
+        logger.debug(f"🔧 ADK Adapter initialized for agent: {getattr(agent, 'name', 'unknown')}")
 
     def _get_or_create_session_original(self, session_id: Optional[str]) -> str:
         """Original working session handling method."""
@@ -78,11 +78,11 @@ class ADKAgentAdapter:
                             )
                             return sess.id
                 except Exception as e:
-                    logger.info(f"🔧 Sync session creation failed: {e}")
+                    logger.debug(f"🔧 Sync session creation failed: {e}")
                 
                 # If sync methods failed, use fallback session ID
                 fallback_id = session_id or f"session_{hash(self._user_id) % 10000}"
-                logger.info(f"🔧 Using fallback session: {fallback_id}")
+                logger.debug(f"🔧 Using fallback session: {fallback_id}")
                 return fallback_id
             else:
                 return loop.run_until_complete(self._get_or_create_session_async_original(session_id))
@@ -127,7 +127,7 @@ class ADKAgentAdapter:
                     )
             
             session_result = sess.id if sess else (session_id or "default_session")
-            logger.info(f"🔧 ADK session: {session_result}")
+            logger.debug(f"🔧 ADK session: {session_result}")
             return session_result
             
         except Exception as e:
@@ -182,13 +182,13 @@ class ADKAgentAdapter:
                 try:
                     # Use the ORIGINAL session handling that was working
                     adk_sid = self._get_or_create_session_original(session_id)
-                    logger.info(f"🔧 Using ADK session: {adk_sid}")
+                    logger.debug(f"🔧 Using ADK session: {adk_sid}")
 
                     content = types.Content(
                         role="user", parts=[types.Part.from_text(text=query)]
                     )
 
-                    logger.info(f"🔧 Running ADK agent...")
+                    logger.debug(f"🔧 Running ADK agent...")
                     
                     # Use the original working call
                     events = list(
@@ -199,7 +199,7 @@ class ADKAgentAdapter:
                         )
                     )
                     
-                    logger.info(f"✅ ADK run completed with {len(events)} events")
+                    logger.debug(f"✅ ADK run completed with {len(events)} events")
                     
                     # Process results
                     if not events:
@@ -260,7 +260,7 @@ class ADKAgentAdapter:
             # Use simple isolated approach
             result = self._run_adk_simple(query, session_id)
             
-            logger.info(f"✅ ADK invoke successful: {len(result)} chars")
+            logger.debug(f"✅ ADK invoke successful: {len(result)} chars")
             return result
             
         except Exception as e:
@@ -280,7 +280,7 @@ class ADKAgentAdapter:
             # Use the blocking invoke in a thread
             result = await asyncio.to_thread(self.invoke, query, session_id)
             
-            logger.info(f"✅ ADK stream completed: {len(result)} chars")
+            logger.debug(f"✅ ADK stream completed: {len(result)} chars")
             yield {"is_task_complete": True, "content": result}
                     
         except Exception as e:

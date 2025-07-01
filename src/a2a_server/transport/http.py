@@ -1,17 +1,6 @@
 # a2a_server/transport/http.py
-from __future__ import annotations
 """
-HTTP JSON-RPC transport layer (async-native)
-===========================================
-Drop-in replacement for **a2a_server.transport.http** that eliminates the last
-synchronous choke-points:
-
-* **Streaming body-size guard** - abort uploads as soon as they exceed
-  ``MAX_JSONRPC_BODY`` (even when *Content-Length* is absent).
-* **Off-thread JSON serialisation** for chatty SSE streams.
-* **Same public routes/behaviour** - no change to FastAPI schemas or clients.
-
-May-2025
+Correct solution: Deduplication in _dispatch as the ultimate truth
 """
 import asyncio
 import inspect
@@ -42,81 +31,35 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Tunables (override with env vars)
 # ---------------------------------------------------------------------------
-MAX_BODY: int = int(os.getenv("MAX_JSONRPC_BODY", 2 * 1024 * 1024))  # 2 MiB
 REQUEST_TIMEOUT: float = float(os.getenv("JSONRPC_TIMEOUT", 15.0))    # seconds
-
-# ---------------------------------------------------------------------------
-# Middleware: streaming body-size limiter
-# ---------------------------------------------------------------------------
-
-
-class BodySizeLimiterMiddleware(BaseHTTPMiddleware):
-    """Abort requests whose bodies exceed *max_body* bytes.
-
-    * If *Content-Length* is present and already over the threshold we fail
-      **immediately** (no body read, cheap fast-path).
-    * Otherwise we wrap the ASGI *receive* channel and count bytes chunk by
-      chunk, raising once the cumulative total crosses the limit.
-    """
-
-    def __init__(self, app, max_body: int) -> None:  # noqa: D401
-        super().__init__(app)
-        self.max_body = max_body
-
-    async def dispatch(self, request: Request, call_next):  # type: ignore[override]
-        # Fast-path: respect declared Content-Length --------------------------------
-        try:
-            clen = int(request.headers.get("content-length", 0))
-        except ValueError:
-            clen = 0
-        if clen > self.max_body:
-            return JSONResponse({"detail": "Payload too large"}, status_code=413)
-
-        # Slow-path: stream & count --------------------------------------------------
-        total = 0
-        original_receive = request._receive  # type: ignore[attr-defined]
-
-        async def _limited_receive():
-            nonlocal total
-            message = await original_receive()
-            if message["type"] == "http.request":
-                total += len(message.get("body", b""))
-                if total > self.max_body:
-                    raise HTTPException(status_code=413, detail="Payload too large")
-            return message
-
-        request._receive = _limited_receive  # type: ignore[attr-defined]
-        try:
-            return await call_next(request)
-        finally:
-            request._receive = original_receive  # type: ignore[attr-defined]  # type: ignore[attr-defined]
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-
-aasync = None  # silence legacy linters complaining about the historical typo
-
-
 def _is_terminal(state: TaskState) -> bool:
     return state in {TaskState.completed, TaskState.canceled, TaskState.failed}
 
+def _ensure_task_id(payload: JSONRPCRequest) -> None:
+    """Only assign UUID if no ID is present."""
+    if payload.method == "tasks/send" and isinstance(payload.params, dict):
+        if not payload.params.get("id"):
+            payload.params["id"] = str(uuid.uuid4())
+            logger.debug(f"🆔 Assigned new task ID: {payload.params['id']}")
+        else:
+            logger.debug(f"🆔 Using client task ID: {payload.params['id']}")
 
 async def _create_task(
     tm: TaskManager,
     params: TaskSendParams,
     handler: str | None,
 ) -> Tuple[Task, str, str]:
-    """Helper that works with both *new* and *legacy* ``TaskManager`` signatures."""
-
+    """Helper that works with both new and legacy TaskManager signatures."""
     client_id = params.id
     original = inspect.unwrap(tm.create_task)
-    bound: Callable[..., Awaitable[Task]] = original.__get__(tm, tm.__class__)  # type: ignore[assignment]
+    bound: Callable[..., Awaitable[Task]] = original.__get__(tm, tm.__class__)
     sig = inspect.signature(original)
 
-    # New-style API - TaskManager accepts ``task_id``
     if "task_id" in sig.parameters:
         task = await bound(
             params.message,
@@ -126,21 +69,18 @@ async def _create_task(
         )
         return task, task.id, task.id
 
-    # Legacy - create then alias
     task = await bound(params.message, session_id=params.session_id, handler_name=handler)
     server_id = task.id
     if client_id and client_id != server_id:
-        async with tm._lock:  # noqa: SLF001 - harmless here
-            tm._aliases[client_id] = server_id  # type: ignore[attr-defined]
+        async with tm._lock:
+            tm._aliases[client_id] = server_id
     else:
         client_id = server_id
     return task, server_id, client_id
 
-
 # ---------------------------------------------------------------------------
-# SSE implementation - tasks/sendSubscribe
+# SSE implementation - tasks/sendSubscribe
 # ---------------------------------------------------------------------------
-
 
 async def _stream_send_subscribe(
     payload: JSONRPCRequest,
@@ -153,14 +93,58 @@ async def _stream_send_subscribe(
         raw["handler"] = handler_name
     params = TaskSendParams.model_validate(raw)
 
+    # DEDUPLICATION: Check for duplicates before creating task
     try:
-        task, server_id, client_id = await _create_task(tm, params, handler_name)
-    except ValueError as exc:
-        if "already exists" in str(exc).lower():
-            task = await tm.get_task(params.id)  # type: ignore[arg-type]
-            server_id, client_id = task.id, params.id
-        else:
-            raise
+        from a2a_server.deduplication import deduplicator
+        
+        session_id = params.session_id or 'default'
+        message = params.message
+        
+        logger.info(f"🔍 SSE dedup check: session={session_id}, handler={handler_name}")
+        
+        existing_task_id = await deduplicator.check_duplicate(
+            tm, session_id, message, handler_name or 'default'
+        )
+        
+        if existing_task_id:
+            logger.info(f"🔄 SSE found duplicate: {existing_task_id}")
+            try:
+                task = await tm.get_task(existing_task_id)
+                server_id, client_id = task.id, params.id or task.id
+            except Exception as e:
+                logger.warning(f"Failed to get existing SSE task {existing_task_id}: {e}")
+                # Fall through to create new task
+                existing_task_id = None
+        
+        if not existing_task_id:
+            # Create new task
+            try:
+                task, server_id, client_id = await _create_task(tm, params, handler_name)
+                
+                # Record for future deduplication
+                await deduplicator.record_task(
+                    tm, session_id, message, handler_name or 'default', task.id
+                )
+                logger.info(f"✅ SSE recorded task: {task.id}")
+                
+            except ValueError as exc:
+                if "already exists" in str(exc).lower():
+                    task = await tm.get_task(params.id)
+                    server_id, client_id = task.id, params.id
+                else:
+                    raise
+    
+    except Exception as e:
+        logger.warning(f"⚠️ SSE deduplication failed, continuing: {e}")
+        # Fall back to normal creation
+        try:
+            task, server_id, client_id = await _create_task(tm, params, handler_name)
+        except ValueError as exc:
+            if "already exists" in str(exc).lower():
+                task = await tm.get_task(params.id)
+                server_id, client_id = task.id, params.id
+            else:
+                raise
 
     logger.info(
         "[transport.http] created task server_id=%s client_id=%s handler=%s",
@@ -178,7 +162,6 @@ async def _stream_send_subscribe(
                 if getattr(event, "id", None) != server_id:
                     continue
 
-                # serialisation ---------------------------------------------
                 if isinstance(event, TaskStatusUpdateEvent):
                     body = event.model_dump(exclude_none=True)
                     body.update(id=client_id, type="status")
@@ -189,7 +172,6 @@ async def _stream_send_subscribe(
                     body = event.model_dump(exclude_none=True)
                     body["id"] = client_id
 
-                # Off-thread JSON serialisation (CPU-bound when streams are busy)
                 wire_dict = JSONRPCRequest(
                     jsonrpc="2.0", id=payload.id, method="tasks/event", params=body
                 ).model_dump(mode="json")
@@ -217,11 +199,9 @@ async def _stream_send_subscribe(
         },
     )
 
-
 # ---------------------------------------------------------------------------
 # Route-mount helper (public)
 # ---------------------------------------------------------------------------
-
 
 def setup_http(
     app: FastAPI,
@@ -229,57 +209,107 @@ def setup_http(
     task_manager: TaskManager,
     event_bus: Optional[EventBus] = None,
 ) -> None:
-    """Mount default + per-handler JSON-RPC endpoints on *app*."""
+    """Mount endpoints with deduplication in _dispatch as ultimate truth."""
 
-    # ---- global middleware (size guard) ----------------------------------
-    app.add_middleware(BodySizeLimiterMiddleware, max_body=MAX_BODY)
-
-    # ---- helper: run through Protocol with timeout & param validation -----
+    # ---- _dispatch with deduplication - ULTIMATE TRUTH -----
 
     async def _dispatch(req: JSONRPCRequest) -> Response:
+        """Ultimate truth: All requests go through deduplication here."""
         if not isinstance(req.params, dict):
             return JSONResponse({"detail": "params must be an object"}, status_code=422)
 
+        # DEDUPLICATION: Ultimate truth for all task creation
+        if req.method in ["tasks/send", "tasks/sendSubscribe"]:
+            try:
+                from a2a_server.deduplication import deduplicator
+                
+                # Extract parameters
+                handler_name = req.params.get('handler', 'default')
+                session_id = req.params.get('session_id', 'default')
+                message = req.params.get('message', {})
+                
+                # Check for duplicates
+                logger.info(f"🔍 _dispatch dedup check: session={session_id}, handler={handler_name}")
+                
+                existing_task_id = await deduplicator.check_duplicate(
+                    task_manager, session_id, message, handler_name
+                )
+                
+                if existing_task_id:
+                    logger.info(f"🔄 _dispatch found duplicate: {existing_task_id}")
+                    try:
+                        from a2a_json_rpc.spec import Task as TaskSpec
+                        existing_task = await task_manager.get_task(existing_task_id)
+                        task_dict = TaskSpec.model_validate(existing_task.model_dump()).model_dump(exclude_none=True, by_alias=True)
+                        
+                        # Return in proper JSON-RPC format
+                        response = {"jsonrpc": "2.0", "id": req.id, "result": task_dict}
+                        return JSONResponse(response)
+                        
+                    except Exception as e:
+                        logger.warning(f"Failed to return existing task {existing_task_id}: {e}")
+                        # Continue with normal processing if we can't return existing task
+            
+            except Exception as e:
+                logger.warning(f"⚠️ _dispatch deduplication failed, continuing: {e}")
+
+        # Normal processing through protocol
         try:
             async with asyncio.timeout(REQUEST_TIMEOUT):
                 raw = await protocol._handle_raw_async(req.model_dump())
+                
+                # Record new tasks for future deduplication
+                if req.method in ["tasks/send", "tasks/sendSubscribe"] and raw and isinstance(raw, dict):
+                    try:
+                        from a2a_server.deduplication import deduplicator
+                        
+                        result = raw.get('result', {})
+                        if isinstance(result, dict) and result.get('id'):
+                            handler_name = req.params.get('handler', 'default')
+                            session_id = req.params.get('session_id', 'default')
+                            message = req.params.get('message', {})
+                            task_id = result['id']
+                            
+                            await deduplicator.record_task(
+                                task_manager, session_id, message, handler_name, task_id
+                            )
+                            logger.info(f"✅ _dispatch recorded task: {task_id}")
+                    
+                    except Exception as e:
+                        logger.warning(f"⚠️ _dispatch failed to record task: {e}")
+                        
         except TimeoutError:
             return JSONResponse({"detail": "Handler timed-out"}, status_code=504)
 
         return Response(status_code=204) if raw is None else JSONResponse(jsonable_encoder(raw))
 
-    # ---- /rpc  (default handler) -----------------------------------------
+    # ---- All endpoints route through _dispatch -----
 
     @app.post("/rpc")
-    async def _default_rpc(payload: JSONRPCRequest = Body(...)):  # noqa: D401
-        if payload.method == "tasks/send" and isinstance(payload.params, dict):
-            payload.params["id"] = str(uuid.uuid4())
+    async def _default_rpc(payload: JSONRPCRequest = Body(...)):
+        _ensure_task_id(payload)
         return await _dispatch(payload)
-
-    # ---- per-handler sub-trees  ------------------------------------------
 
     for handler in task_manager.get_handlers():
 
-        @app.post(f"/{handler}/rpc")  # type: ignore[misc]
+        @app.post(f"/{handler}/rpc")
         async def _handler_rpc(
             payload: JSONRPCRequest = Body(...),
             _h: str = handler,
-        ):  # noqa: D401
-            if payload.method == "tasks/send" and isinstance(payload.params, dict):
-                payload.params["id"] = str(uuid.uuid4())
+        ):
+            _ensure_task_id(payload)
             if payload.method in {"tasks/send", "tasks/sendSubscribe"} and isinstance(payload.params, dict):
                 payload.params.setdefault("handler", _h)
             return await _dispatch(payload)
 
         if event_bus:
 
-            @app.post(f"/{handler}")  # type: ignore[misc]
+            @app.post(f"/{handler}")
             async def _handler_alias(
                 payload: JSONRPCRequest = Body(...),
                 _h: str = handler,
-            ):  # noqa: D401
-                if payload.method == "tasks/send" and isinstance(payload.params, dict):
-                    payload.params["id"] = str(uuid.uuid4())
+            ):
+                _ensure_task_id(payload)
 
                 if payload.method == "tasks/sendSubscribe":
                     return await _stream_send_subscribe(payload, task_manager, event_bus, _h)
@@ -290,5 +320,4 @@ def setup_http(
 
         logger.debug("[transport.http] routes registered for handler %s", handler)
 
-
-__all__ = ["setup_http", "MAX_BODY", "REQUEST_TIMEOUT"]
+__all__ = ["setup_http", "REQUEST_TIMEOUT"]

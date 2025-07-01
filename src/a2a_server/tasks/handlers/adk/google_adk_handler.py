@@ -73,7 +73,7 @@ class GoogleADKHandler(SessionAwareTaskHandler):
         )
         
         session_type = "SHARED" if self.session_sharing else "ISOLATED"
-        logger.info(f"Initialized GoogleADKHandler '{self.name}' with {session_type} sessions (CLEAN - auto-expire)")
+        logger.debug(f"Initialized GoogleADKHandler '{self.name}' with {session_type} sessions (CLEAN - auto-expire)")
     
     def _wrap_adk_agent(self, agent):
         """Wrap ADK agent with adapter if needed."""
@@ -87,7 +87,7 @@ class GoogleADKHandler(SessionAwareTaskHandler):
             try:
                 from a2a_server.tasks.handlers.adk.adk_agent_adapter import ADKAgentAdapter
                 wrapped = ADKAgentAdapter(agent)
-                logger.info(f"Wrapped raw ADK agent: {type(agent)} -> ADKAgentAdapter")
+                logger.debug(f"Wrapped raw ADK agent: {type(agent)} -> ADKAgentAdapter")
                 return wrapped
             except ImportError as e:
                 logger.error(f"Could not import ADKAgentAdapter: {e}")
@@ -170,7 +170,7 @@ class GoogleADKHandler(SessionAwareTaskHandler):
         Process a task with the ADK agent using clean session handling.
         """
         
-        logger.info(f"Processing task {task_id[:8]}... with handler '{self.name}'")
+        logger.debug(f"Processing task {task_id[:8]}... with handler '{self.name}'")
         
         # Working status
         yield TaskStatusUpdateEvent(

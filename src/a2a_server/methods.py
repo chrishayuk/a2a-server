@@ -1,4 +1,4 @@
-# a2a_server/methods.py - Clean RPC methods with health check handling
+# a2a_server/methods.py - Simplified without duplicate deduplication
 
 import asyncio
 import logging
@@ -12,7 +12,6 @@ from a2a_json_rpc.spec import (
     TaskSendParams,
 )
 from a2a_server.tasks.task_manager import TaskManager, TaskNotFound
-from a2a_server.deduplication import deduplicator
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -70,7 +69,7 @@ def _rpc(
             # Log result
             if method in ("tasks/send", "tasks/sendSubscribe") and isinstance(result, dict):
                 task_id = result.get("id", "unknown")[:12]
-                logger.info(f"✅ Task created: {task_id}...")
+                logger.debug(f"✅ Task created: {task_id}...")
                 
             return result
 
@@ -109,84 +108,30 @@ def register_methods(protocol: JSONRPCProtocol, manager: TaskManager) -> None:
 
     @_rpc(protocol, "tasks/send", TaskSendParams.model_validate)
     async def _send(method: str, p: TaskSendParams, raw: Dict[str, Any]):
+        """Simple task creation - deduplication handled by _dispatch."""
         handler_name = raw.get('handler', 'default')
         
-        # Check for duplicates first
-        logger.info(f"🔍 RPC dedup check: session={p.session_id[:8]}, handler={handler_name}")
-        
-        existing_task_id = None
-        try:
-            existing_task_id = await deduplicator.check_duplicate(
-                manager, p.session_id, p.message, handler_name
-            )
-        except Exception as e:
-            logger.warning(f"⚠️ Deduplication check failed, continuing: {e}")
-        
-        if existing_task_id:
-            logger.info(f"🔄 RPC reusing existing task: {existing_task_id}")
-            try:
-                existing_task = await manager.get_task(existing_task_id)
-                return Task.model_validate(existing_task.model_dump()).model_dump(exclude_none=True, by_alias=True)
-            except TaskNotFound:
-                logger.warning(f"Duplicate task {existing_task_id} not found, creating new")
-        
-        # Create new task
+        # Create new task (deduplication already handled by _dispatch)
         task = await manager.create_task(p.message, session_id=p.session_id, handler_name=handler_name)
         
-        # Record for future deduplication
-        try:
-            await deduplicator.record_task(
-                manager, p.session_id, p.message, handler_name, task.id
-            )
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to record task for deduplication: {e}")
-        
-        logger.info(f"✅ RPC new task created: {task.id}")
+        logger.info(f"✅ RPC task created: {task.id}")
         return Task.model_validate(task.model_dump()).model_dump(exclude_none=True, by_alias=True)
 
     @_rpc(protocol, "tasks/sendSubscribe", TaskSendParams.model_validate)
     async def _send_subscribe(method: str, p: TaskSendParams, raw: Dict[str, Any]):
+        """Simple subscription task creation - deduplication handled by _dispatch."""
         handler_name = raw.get("handler", "default")
         client_id = raw.get("id")
         
-        # Check for duplicates first
-        logger.info(f"🔍 Stream dedup check: session={p.session_id[:8]}, handler={handler_name}")
-        
-        existing_task_id = None
-        try:
-            existing_task_id = await deduplicator.check_duplicate(
-                manager, p.session_id, p.message, handler_name
-            )
-        except Exception as e:
-            logger.warning(f"⚠️ Stream deduplication check failed, continuing: {e}")
-        
-        if existing_task_id:
-            logger.info(f"🔄 Stream reusing task: {existing_task_id}")
-            try:
-                task = await manager.get_task(existing_task_id)
-                return Task.model_validate(task.model_dump()).model_dump(exclude_none=True, by_alias=True)
-            except TaskNotFound:
-                logger.warning(f"Stream task {existing_task_id} not found, creating new")
-        
-        # Create or reuse task
+        # Create or reuse task (deduplication already handled by _dispatch)
         try:
             task = await manager.create_task(p.message, session_id=p.session_id, handler_name=handler_name, task_id=client_id)
-            
-            # Record for future deduplication
-            if client_id:
-                try:
-                    await deduplicator.record_task(
-                        manager, p.session_id, p.message, handler_name, task.id
-                    )
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to record stream task for deduplication: {e}")
-            
-            logger.info(f"✅ Stream task created: {task.id}")
+            logger.info(f"✅ RPC stream task created: {task.id}")
             
         except ValueError as exc:
             if "already exists" in str(exc).lower() and client_id:
                 task = await manager.get_task(client_id)
-                logger.info(f"🔄 Stream reusing existing: {task.id}")
+                logger.info(f"🔄 RPC stream reusing existing: {task.id}")
             else:
                 raise
                 
