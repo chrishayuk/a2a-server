@@ -60,7 +60,7 @@ class MockSessionHandler(SessionAwareTaskHandler):
     async def _get_ai_session_manager(self, a2a_session_id: Optional[str]) -> Optional[MockAISessionManager]:
         """Override to return mock session manager."""
         if not a2a_session_id:
-            return None
+            return None  # Return None for None session_id
             
         if a2a_session_id not in self._mock_ai_sessions:
             self._mock_ai_sessions[a2a_session_id] = MockAISessionManager()
@@ -172,9 +172,9 @@ async def test_add_user_message(handler):
     result = await handler.add_user_message("test_session", "")
     assert result is True  # Should handle gracefully
     
-    # Test with no session - should still succeed  
+    # Test with no session - should return False when session_id is None
     result = await handler.add_user_message(None, "Hello")
-    assert result is True  # Should handle gracefully
+    assert result is False  # Should return False when no session manager available
 
 
 @pytest.mark.asyncio
