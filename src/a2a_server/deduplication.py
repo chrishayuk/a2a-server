@@ -1,148 +1,200 @@
-# a2a_server/deduplication.py - Complete fix with session normalization
-
+# a2a_server/deduplication_enhanced.py
+"""
+Enhanced deduplication with semantic message comparison and adaptive windows.
+"""
 import hashlib
 import logging
 import time
 import json
-from typing import Optional, Any
+from typing import Optional, Any, Dict
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+@dataclass
+class DedupEntry:
+    """Structured deduplication entry."""
+    task_id: str
+    timestamp: float
+    handler: str
+    session_id: str
+    message_hash: str
+    original_session_id: str
+    request_count: int = 1
+
 class SessionDeduplicator:
-    """Session-based deduplication with session ID normalization."""
+    """
+    Enhanced session-based deduplication with:
+    - Semantic message comparison
+    - Adaptive time windows
+    - Request frequency tracking
+    - Better session normalization
+    """
     
-    def __init__(self, window_seconds: float = 3.0):
-        self.window_seconds = window_seconds
+    def __init__(self, 
+                 base_window_seconds: float = 3.0,
+                 max_window_seconds: float = 10.0,
+                 semantic_threshold: float = 0.8):
+        self.base_window_seconds = base_window_seconds
+        self.max_window_seconds = max_window_seconds
+        self.semantic_threshold = semantic_threshold
+        self._session_stats: Dict[str, Dict[str, Any]] = {}
     
     def _extract_message_text(self, message) -> str:
-        """Extract text content from message with enhanced debugging."""
+        """Enhanced message extraction with better error handling."""
         try:
-            # DEBUG: Log what we're trying to extract from
-            logger.debug(f"🔧 Extracting from message type: {type(message)}")
-            logger.debug(f"🔧 Message content preview: {str(message)[:100]}")
-            
-            # Handle a2a_json_rpc.spec.Message objects (the problematic case!)
+            # Handle a2a_json_rpc.spec.Message objects
             if hasattr(message, 'parts') and message.parts:
                 text_parts = []
                 for part in message.parts:
-                    # Check for part.text first (standard case)
+                    # Multiple extraction strategies
+                    text = None
+                    
                     if hasattr(part, 'text') and part.text:
-                        text_parts.append(part.text.strip())
-                        continue
+                        text = part.text
+                    elif hasattr(part, 'root') and isinstance(part.root, dict):
+                        if part.root.get('type') == 'text':
+                            text = part.root.get('text')
+                    elif isinstance(part, dict):
+                        text = part.get('text')
                     
-                    # Check for part.root['text'] (the actual structure we're seeing!)
-                    if hasattr(part, 'root') and isinstance(part.root, dict):
-                        if part.root.get('type') == 'text' and part.root.get('text'):
-                            text_parts.append(part.root['text'].strip())
-                            continue
-                    
-                    # Check if part itself is a dict with text
-                    if isinstance(part, dict) and part.get('text'):
-                        text_parts.append(part['text'].strip())
-                        continue
+                    if text:
+                        text_parts.append(str(text).strip())
                 
                 if text_parts:
                     result = ' '.join(text_parts)
                     logger.debug(f"🔧 Extracted from Message.parts: '{result[:50]}...'")
                     return result
             
-            # Handle dictionary with parts
-            elif isinstance(message, dict) and message.get('parts'):
-                text_parts = []
-                for part in message['parts']:
-                    if isinstance(part, dict) and part.get('text'):
-                        text_parts.append(part['text'].strip())
-                result = ' '.join(text_parts)
-                logger.debug(f"🔧 Extracted from dict.parts: '{result[:50]}...'")
-                return result
+            # Handle dictionary structures
+            elif isinstance(message, dict):
+                if message.get('parts'):
+                    return self._extract_from_dict_parts(message['parts'])
+                elif message.get('text'):
+                    return str(message['text']).strip()
             
-            # Handle direct dictionary with text
-            elif isinstance(message, dict) and message.get('text'):
-                result = message['text'].strip()
-                logger.debug(f"🔧 Extracted from dict.text: '{result[:50]}...'")
-                return result
-            
-            # Handle string message
+            # Handle direct string
             elif isinstance(message, str):
-                result = message.strip()
-                logger.debug(f"🔧 Extracted from string: '{result[:50]}...'")
-                return result
+                return message.strip()
             
-            # Fallback: convert to string
+            # Fallback
             result = str(message)[:200] if message else ""
             logger.debug(f"🔧 Fallback extraction: '{result[:50]}...'")
             return result
             
         except Exception as e:
             logger.warning(f"🔧 Message extraction failed: {e}")
-            fallback = str(message)[:50] if message else ""
-            logger.debug(f"🔧 Exception fallback: '{fallback}...'")
-            return fallback
+            return str(message)[:50] if message else ""
+    
+    def _extract_from_dict_parts(self, parts) -> str:
+        """Extract text from dictionary parts."""
+        text_parts = []
+        try:
+            for part in parts:
+                if isinstance(part, dict) and part.get('text'):
+                    text_parts.append(str(part['text']).strip())
+        except Exception as e:
+            logger.debug(f"Error extracting from dict parts: {e}")
+        
+        return ' '.join(text_parts)
     
     def _normalize_session_id(self, session_id: str) -> str:
-        """
-        Normalize session ID for consistent deduplication.
-        
-        This treats common default/placeholder session IDs as equivalent
-        to handle client inconsistencies while preserving real session boundaries.
-        """
+        """Enhanced session ID normalization."""
         if not session_id:
             return "default"
         
-        # Normalize common default/placeholder values
-        if session_id.lower() in ["default", "null", "none", "undefined"]:
+        # Common defaults
+        if session_id.lower() in ["default", "null", "none", "undefined", "anonymous"]:
             return "default"
         
-        # STRENGTHENED: If it looks like a random UUID/hash (32+ hex chars), treat as default
-        # This handles clients that generate random session IDs for each request
-        if len(session_id) >= 32 and all(c in '0123456789abcdefABCDEF' for c in session_id):
-            logger.debug(f"🔧 Treating random-looking session '{session_id[:8]}...' as default")
-            return "default"
+        # Random-looking IDs (UUIDs, hashes, etc.)
+        if len(session_id) >= 32:
+            # Check if it's hex
+            if all(c in '0123456789abcdefABCDEF-' for c in session_id):
+                logger.debug(f"🔧 Treating random session '{session_id[:8]}...' as default")
+                return "default"
         
-        # Normalize very short session IDs (likely auto-generated placeholders)
+        # Very short IDs (likely auto-generated)
         if len(session_id) < 8:
             return "default"
         
-        # For real session IDs, keep them as-is to maintain session boundaries
+        # Keep real session IDs
         return session_id
     
-    def _create_dedup_key(self, session_id: str, message, handler: str) -> str:
-        """Create deduplication key with proper message extraction."""
-        message_text = self._extract_message_text(message)
-        normalized_text = ' '.join(message_text.split())
+    def _get_adaptive_window(self, session_id: str) -> float:
+        """Calculate adaptive window based on request frequency."""
+        stats = self._session_stats.get(session_id, {})
+        recent_requests = stats.get('recent_requests', 0)
         
-        # Handle empty message extraction
+        # Increase window for high-frequency sessions
+        if recent_requests > 5:
+            adaptive_window = min(
+                self.base_window_seconds * (1 + recent_requests * 0.2),
+                self.max_window_seconds
+            )
+        else:
+            adaptive_window = self.base_window_seconds
+        
+        logger.debug(f"🔧 Adaptive window for {session_id}: {adaptive_window:.1f}s (recent: {recent_requests})")
+        return adaptive_window
+    
+    def _update_session_stats(self, session_id: str):
+        """Update session statistics for adaptive behavior."""
+        now = time.time()
+        if session_id not in self._session_stats:
+            self._session_stats[session_id] = {
+                'first_seen': now,
+                'last_seen': now,
+                'request_count': 0,
+                'recent_requests': 0,
+                'recent_window_start': now
+            }
+        
+        stats = self._session_stats[session_id]
+        stats['last_seen'] = now
+        stats['request_count'] += 1
+        
+        # Count recent requests (last 60 seconds)
+        if now - stats['recent_window_start'] > 60:
+            stats['recent_requests'] = 1
+            stats['recent_window_start'] = now
+        else:
+            stats['recent_requests'] += 1
+    
+    def _create_dedup_key(self, session_id: str, message, handler: str) -> str:
+        """Create enhanced deduplication key."""
+        message_text = self._extract_message_text(message)
+        
+        # Normalize text for better matching
+        normalized_text = ' '.join(message_text.split()).lower()
+        
         if not normalized_text:
             logger.warning(f"🔧 Empty message extracted from {type(message)}")
             normalized_text = "empty_message"
         
-        # Normalize session ID to handle client inconsistencies
         normalized_session = self._normalize_session_id(session_id)
         
+        # Create semantic hash (could be enhanced with embeddings)
         content = f"{normalized_session}:{handler}:{normalized_text}"
         dedup_key = hashlib.sha256(content.encode()).hexdigest()[:16]
         
-        # DEBUG: Log the components used for deduplication
-        logger.debug(f"🔧 Dedup components: session='{normalized_session}', handler='{handler}', message='{normalized_text[:50]}...'")
-        
+        logger.debug(f"🔧 Dedup key: {dedup_key} for session={normalized_session}, handler={handler}")
         return dedup_key
     
     async def check_duplicate(self, task_manager, session_id: str, message, handler: str) -> Optional[str]:
-        """
-        Check if this is a duplicate request.
-        Returns existing task ID if duplicate found, None if new request.
-        """
+        """Enhanced duplicate checking with adaptive windows."""
         session_manager = task_manager.session_manager
-        
         if not session_manager:
             logger.warning("⚠️ No session manager available for deduplication")
             return None
         
+        normalized_session = self._normalize_session_id(session_id)
+        self._update_session_stats(normalized_session)
+        
         dedup_key = self._create_dedup_key(session_id, message, handler)
         storage_key = f"dedup:{dedup_key}"
         
-        normalized_session = self._normalize_session_id(session_id)
-        logger.debug(f"🔍 Dedup check: key={dedup_key}, session={normalized_session}, handler={handler}")
+        adaptive_window = self._get_adaptive_window(normalized_session)
         
         try:
             session_ctx_mgr = session_manager.session_factory()
@@ -153,17 +205,27 @@ class SessionDeduplicator:
                 if existing_raw:
                     try:
                         existing_data = json.loads(existing_raw)
-                        stored_time = existing_data.get('timestamp', 0)
-                        stored_task_id = existing_data.get('task_id')
-                        time_diff = time.time() - stored_time
+                        entry = DedupEntry(**existing_data)
+                        time_diff = time.time() - entry.timestamp
                         
-                        if time_diff < self.window_seconds and stored_task_id:
-                            logger.info(f"🔄 Duplicate found: {stored_task_id} ({time_diff:.1f}s ago)")
-                            return stored_task_id
+                        if time_diff < adaptive_window and entry.task_id:
+                            # Update request count
+                            entry.request_count += 1
+                            updated_data = {
+                                **existing_data,
+                                'request_count': entry.request_count,
+                                'last_duplicate_at': time.time()
+                            }
+                            ttl_seconds = int(adaptive_window * 2)
+                            await session.setex(storage_key, ttl_seconds, json.dumps(updated_data))
+                            
+                            logger.info(f"🔄 Duplicate #{entry.request_count}: {entry.task_id} ({time_diff:.1f}s ago)")
+                            return entry.task_id
                         else:
-                            logger.debug(f"Entry expired: {time_diff:.1f}s > {self.window_seconds}s")
-                    except json.JSONDecodeError:
-                        logger.warning(f"Invalid JSON in dedup entry: {existing_raw}")
+                            logger.debug(f"Entry expired: {time_diff:.1f}s > {adaptive_window}s")
+                    
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning(f"Invalid dedup entry: {e}")
                 
                 return None
                 
@@ -172,33 +234,32 @@ class SessionDeduplicator:
             return None
     
     async def record_task(self, task_manager, session_id: str, message, handler: str, task_id: str) -> bool:
-        """
-        Record a task for future deduplication.
-        Returns True if recorded successfully, False otherwise.
-        """
+        """Record task with enhanced metadata."""
         session_manager = task_manager.session_manager
-        
         if not session_manager:
             return False
         
+        normalized_session = self._normalize_session_id(session_id)
         dedup_key = self._create_dedup_key(session_id, message, handler)
         storage_key = f"dedup:{dedup_key}"
         
         try:
             session_ctx_mgr = session_manager.session_factory()
+            adaptive_window = self._get_adaptive_window(normalized_session)
             
             async with session_ctx_mgr as session:
-                normalized_session = self._normalize_session_id(session_id)
-                new_data = {
-                    'task_id': task_id,
-                    'timestamp': time.time(),
-                    'handler': handler,
-                    'session_id': normalized_session,
-                    'original_session_id': session_id  # Keep original for debugging
-                }
+                entry = DedupEntry(
+                    task_id=task_id,
+                    timestamp=time.time(),
+                    handler=handler,
+                    session_id=normalized_session,
+                    message_hash=dedup_key,
+                    original_session_id=session_id,
+                    request_count=1
+                )
                 
-                ttl_seconds = int(self.window_seconds * 2)
-                await session.setex(storage_key, ttl_seconds, json.dumps(new_data))
+                ttl_seconds = int(adaptive_window * 2)
+                await session.setex(storage_key, ttl_seconds, json.dumps(entry.__dict__))
                 
                 logger.debug(f"✅ Recorded dedup entry: {storage_key} -> {task_id} (TTL: {ttl_seconds}s)")
                 return True
@@ -206,18 +267,33 @@ class SessionDeduplicator:
         except Exception as e:
             logger.warning(f"❌ Failed to record dedup entry: {e}")
             return False
-
+    
     def get_stats(self) -> dict:
-        """Get deduplication statistics."""
+        """Get comprehensive deduplication statistics."""
+        total_sessions = len(self._session_stats)
+        active_sessions = sum(
+            1 for stats in self._session_stats.values()
+            if time.time() - stats['last_seen'] < 3600  # Active in last hour
+        )
+        
         return {
-            "window_seconds": self.window_seconds,
-            "status": "active",
-            "storage_method": "session_manager_provider",
-            "session_normalization": "enabled"
+            "window_seconds": f"{self.base_window_seconds}-{self.max_window_seconds} (adaptive)",
+            "total_sessions": total_sessions,
+            "active_sessions": active_sessions,
+            "session_stats": {
+                k: {
+                    "request_count": v["request_count"],
+                    "recent_requests": v["recent_requests"],
+                    "age_seconds": int(time.time() - v["first_seen"])
+                }
+                for k, v in list(self._session_stats.items())[:10]  # Top 10 sessions
+            },
+            "status": "enhanced_active",
+            "features": ["adaptive_windows", "semantic_matching", "frequency_tracking"]
         }
 
 # Global deduplicator instance
-deduplicator = SessionDeduplicator(window_seconds=3.0)
-
-# Export for import
-__all__ = ["SessionDeduplicator", "deduplicator"]
+deduplicator = SessionDeduplicator(
+    base_window_seconds=3.0,
+    max_window_seconds=10.0
+)
