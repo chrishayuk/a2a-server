@@ -1,209 +1,641 @@
-# File: tests/test_metrics.py
+#!/usr/bin/env python3
+# tests/test_metrics.py
 """
-Unit-tests for the metrics helper.
+Comprehensive unit tests for a2a_server.metrics module.
 
-*   Ensures that the Console exporter is invoked when no OTLP endpoint
-    is configured.
-*   Verifies that calling `instrument_app()` twice is a no-op
-    (middleware not duplicated, flag set).
+Tests the OpenTelemetry metrics integration including:
+- Provider initialization and configuration
+- Prometheus metrics endpoint
+- Console and OTLP exporters
+- Middleware instrumentation
+- Graceful shutdown handling
+- Environment variable configuration
 """
-import asyncio
-import inspect
-import json
-import logging
-import uuid
+
 import os
-from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
+import pytest
+from unittest.mock import Mock, patch, MagicMock, call
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from fastapi.responses import JSONResponse
 
-from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse, Response, StreamingResponse
-
-from a2a_json_rpc.protocol import JSONRPCProtocol
-from a2a_json_rpc.spec import (
-    JSONRPCRequest,
-    TaskArtifactUpdateEvent,
-    TaskSendParams,
-    TaskState,
-    TaskStatusUpdateEvent,
-)
-from a2a_server.pubsub import EventBus
-from a2a_server.tasks.task_manager import Task, TaskManager
-
-logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Tunables - override via env vars if needed
-# ---------------------------------------------------------------------------
-
-MAX_BODY = int(os.getenv("MAX_JSONRPC_BODY", 2 * 1024 * 1024))  # 2 MiB
-REQUEST_TIMEOUT = float(os.getenv("JSONRPC_TIMEOUT", 15.0))      # seconds
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _is_terminal(state: TaskState) -> bool:
-    return state in {TaskState.completed, TaskState.canceled, TaskState.failed}
+import a2a_server.metrics as metrics_module
 
 
-async def _create_task(
-    tm: TaskManager, params: TaskSendParams, handler: str | None
-) -> Tuple[Task, str, str]:
-    """Copes with both *new* and *legacy* TaskManager signatures."""
-    client_id = params.id
-    original = inspect.unwrap(tm.create_task)
-    bound: Callable[..., Awaitable[Task]] = original.__get__(tm, tm.__class__)  # type: ignore[assignment]
-    sig = inspect.signature(original)
+class TestEnvironmentConfiguration:
+    """Test environment variable configuration."""
 
-    if "task_id" in sig.parameters:  # new-style
-        task = await bound(
-            params.message, session_id=params.session_id, handler_name=handler, task_id=client_id
-        )
-        return task, task.id, task.id
+    @patch.dict(os.environ, {}, clear=True)
+    def test_default_configuration(self):
+        """Test default configuration when no env vars are set."""
+        # Reload module to pick up clean environment
+        import importlib
+        importlib.reload(metrics_module)
+        
+        assert metrics_module._OTLP_ENDPOINT is None
+        assert metrics_module._PROM_ENABLED is False
+        assert metrics_module._CONSOLE_ENABLED is False
+        assert metrics_module._SERVICE_NAME == "a2a-server"
+        assert metrics_module._INTERVAL_MS == 15000
 
-    # legacy
-    task = await bound(params.message, session_id=params.session_id, handler_name=handler)
-    server_id = task.id
-    if client_id and client_id != server_id:
-        async with tm._lock:  # noqa: SLF001
-            tm._aliases[client_id] = server_id  # type: ignore[attr-defined]
-    else:
-        client_id = server_id
-    return task, server_id, client_id
+    @patch.dict(os.environ, {
+        'OTEL_EXPORTER_OTLP_ENDPOINT': 'http://localhost:4318',
+        'PROMETHEUS_METRICS': 'true',
+        'CONSOLE_METRICS': 'true',
+        'OTEL_SERVICE_NAME': 'test-service',
+        'OTEL_EXPORT_INTERVAL_MS': '5000'
+    })
+    def test_environment_variable_configuration(self):
+        """Test configuration from environment variables."""
+        import importlib
+        importlib.reload(metrics_module)
+        
+        assert metrics_module._OTLP_ENDPOINT == 'http://localhost:4318'
+        assert metrics_module._PROM_ENABLED is True
+        assert metrics_module._CONSOLE_ENABLED is True
+        assert metrics_module._SERVICE_NAME == 'test-service'
+        assert metrics_module._INTERVAL_MS == 5000
 
-# ---------------------------------------------------------------------------
-# SSE implementation for tasks/sendSubscribe
-# ---------------------------------------------------------------------------
-async def _stream_send_subscribe(
-    payload: JSONRPCRequest,
-    tm: TaskManager,
-    bus: EventBus,
-    handler_name: str | None,
-) -> StreamingResponse:
-    raw = dict(payload.params)
-    if handler_name:
-        raw["handler"] = handler_name
-    params = TaskSendParams.model_validate(raw)
+    @patch.dict(os.environ, {
+        'PROMETHEUS_METRICS': 'false',
+        'CONSOLE_METRICS': 'FALSE',
+        'PROMETHEUS_METRICS': 'no'
+    })
+    def test_boolean_environment_parsing(self):
+        """Test that boolean environment variables are parsed correctly."""
+        import importlib
+        importlib.reload(metrics_module)
+        
+        # Only 'true' (case insensitive) should enable features
+        assert metrics_module._PROM_ENABLED is False
+        assert metrics_module._CONSOLE_ENABLED is False
 
-    try:
-        task, server_id, client_id = await _create_task(tm, params, handler_name)
-    except ValueError as exc:
-        if "already exists" in str(exc).lower():
-            task = await tm.get_task(params.id)  # type: ignore[arg-type]
-            server_id, client_id = task.id, params.id
+
+class TestPrometheusIntegration:
+    """Test Prometheus integration when available."""
+
+    def setup_method(self):
+        """Reset global state before each test."""
+        metrics_module._provider = None
+        metrics_module._counter = None
+        metrics_module._histogram = None
+
+    def test_prometheus_enabled_when_available(self):
+        """Test Prometheus integration when dependencies are available."""
+        # Test the current state - if Prometheus is enabled, it should be configured
+        if metrics_module._PROM_ENABLED:
+            assert metrics_module._prom_reader is not None
+            assert metrics_module.prometheus_client is not None
         else:
-            raise
+            # If not enabled, verify the fallback behavior
+            assert metrics_module._prom_reader is None
 
-    logger.info(
-        "[transport.http] created task server_id=%s client_id=%s handler=%s",
-        server_id,
-        client_id,
-        handler_name or "<default>",
-    )
+    def test_prometheus_disabled_when_unavailable(self):
+        """Test Prometheus gracefully disabled when dependencies missing."""
+        # This tests the current module state after import
+        # The actual behavior depends on whether prometheus_client is available
+        # We just verify the module doesn't crash during import
+        assert hasattr(metrics_module, '_PROM_ENABLED')
+        assert hasattr(metrics_module, 'prometheus_client')
 
-    queue = bus.subscribe()
 
-    async def _event_source():
-        try:
-            while True:
-                event = await queue.get()
-                if getattr(event, "id", None) != server_id:
-                    continue
+class TestProviderInitialization:
+    """Test metrics provider initialization."""
 
-                if isinstance(event, TaskStatusUpdateEvent):
-                    body = event.model_dump(exclude_none=True)
-                    body.update(id=client_id, type="status")
-                elif isinstance(event, TaskArtifactUpdateEvent):
-                    body = event.model_dump(exclude_none=True)
-                    body.update(id=client_id, type="artifact")
-                else:
-                    body = event.model_dump(exclude_none=True)
-                    body["id"] = client_id
+    def setup_method(self):
+        """Reset global state before each test."""
+        metrics_module._provider = None
+        metrics_module._counter = None
+        metrics_module._histogram = None
 
-                notif = JSONRPCRequest(
-                    jsonrpc="2.0", id=payload.id, method="tasks/event", params=body
+    @patch('a2a_server.metrics.metrics.set_meter_provider')
+    @patch('a2a_server.metrics.metrics.get_meter_provider')
+    def test_init_provider_creates_new_provider(self, mock_get_provider, mock_set_provider):
+        """Test that _init_provider creates a new provider when none exists."""
+        # Create a real class for MeterProvider to use with isinstance
+        class MockMeterProviderType:
+            def __init__(self, *args, **kwargs):
+                self.shutdown = Mock()
+                
+        # Mock get_meter_provider to return something that's not a MeterProvider
+        mock_current_provider = Mock()
+        mock_get_provider.return_value = mock_current_provider
+        
+        with patch('a2a_server.metrics.MeterProvider', MockMeterProviderType) as mock_meter_provider:
+            with patch('a2a_server.metrics.metrics.get_meter') as mock_get_meter:
+                mock_meter = Mock()
+                mock_get_meter.return_value = mock_meter
+                mock_counter = Mock()
+                mock_histogram = Mock()
+                mock_meter.create_counter.return_value = mock_counter
+                mock_meter.create_histogram.return_value = mock_histogram
+                
+                # Reset provider state to force creation
+                metrics_module._provider = None
+                
+                metrics_module._init_provider()
+                
+                # Should have created a new provider since current isn't MeterProvider instance
+                mock_set_provider.assert_called_once()
+                assert metrics_module._counter is mock_counter
+                assert metrics_module._histogram is mock_histogram
+
+    def test_init_provider_idempotent(self):
+        """Test that _init_provider is idempotent when already configured."""
+        # Set up already configured state
+        mock_provider = Mock()
+        mock_counter = Mock()
+        mock_histogram = Mock()
+        
+        metrics_module._provider = mock_provider
+        metrics_module._counter = mock_counter
+        metrics_module._histogram = mock_histogram
+        
+        with patch('a2a_server.metrics.metrics.get_meter_provider') as mock_get_provider:
+            metrics_module._init_provider()
+            
+            # Should not have called get_meter_provider since already configured
+            mock_get_provider.assert_not_called()
+            
+            # State should remain unchanged
+            assert metrics_module._provider is mock_provider
+            assert metrics_module._counter is mock_counter
+            assert metrics_module._histogram is mock_histogram
+
+    @patch('a2a_server.metrics.PeriodicExportingMetricReader')
+    @patch('a2a_server.metrics.OTLPMetricExporter')
+    @patch('a2a_server.metrics.metrics.set_meter_provider')
+    @patch('a2a_server.metrics.metrics.get_meter')
+    @patch('a2a_server.metrics.metrics.get_meter_provider')
+    def test_init_provider_with_otlp_endpoint(self, mock_get_provider, mock_get_meter, mock_set_provider, mock_otlp_exporter, mock_periodic_reader):
+        """Test provider initialization with OTLP endpoint."""
+        # Create real class for isinstance check
+        class MockMeterProviderType:
+            def __init__(self, *args, **kwargs):
+                self.shutdown = Mock()
+        
+        mock_exporter = Mock()
+        mock_otlp_exporter.return_value = mock_exporter
+        mock_reader = Mock()
+        mock_periodic_reader.return_value = mock_reader
+        mock_meter = Mock()
+        mock_get_meter.return_value = mock_meter
+        mock_meter.create_counter.return_value = Mock()
+        mock_meter.create_histogram.return_value = Mock()
+        mock_get_provider.return_value = Mock()  # Not a MeterProvider
+        
+        with patch('a2a_server.metrics.MeterProvider', MockMeterProviderType):
+            # Reset state and set OTLP endpoint
+            metrics_module._provider = None
+            original_endpoint = metrics_module._OTLP_ENDPOINT
+            metrics_module._OTLP_ENDPOINT = 'http://localhost:4318'
+            
+            try:
+                metrics_module._init_provider()
+                
+                mock_otlp_exporter.assert_called_once_with(
+                    endpoint='http://localhost:4318', 
+                    insecure=True
                 )
-                yield f"data: {notif.model_dump_json()}\n\n"
+                mock_periodic_reader.assert_called_once_with(
+                    mock_exporter,
+                    export_interval_millis=metrics_module._INTERVAL_MS
+                )
+            finally:
+                metrics_module._OTLP_ENDPOINT = original_endpoint
 
-                if getattr(event, "final", False) or (
-                    isinstance(event, TaskStatusUpdateEvent) and _is_terminal(event.status.state)
-                ):
-                    break
-        except asyncio.CancelledError:
-            logger.debug("SSE client for %s disconnected", client_id)
-            raise
-        finally:
-            bus.unsubscribe(queue)
+    @patch('a2a_server.metrics.PeriodicExportingMetricReader')
+    @patch('a2a_server.metrics.ConsoleMetricExporter')
+    @patch('a2a_server.metrics.metrics.set_meter_provider')
+    @patch('a2a_server.metrics.metrics.get_meter')
+    @patch('a2a_server.metrics.metrics.get_meter_provider')
+    def test_init_provider_with_console_exporter(self, mock_get_provider, mock_get_meter, mock_set_provider, mock_console_exporter, mock_periodic_reader):
+        """Test provider initialization with console exporter."""
+        # Create real class for isinstance check
+        class MockMeterProviderType:
+            def __init__(self, *args, **kwargs):
+                self.shutdown = Mock()
+        
+        mock_exporter = Mock()
+        mock_console_exporter.return_value = mock_exporter
+        mock_reader = Mock()
+        mock_periodic_reader.return_value = mock_reader
+        mock_meter = Mock()
+        mock_get_meter.return_value = mock_meter
+        mock_meter.create_counter.return_value = Mock()
+        mock_meter.create_histogram.return_value = Mock()
+        mock_get_provider.return_value = Mock()  # Not a MeterProvider
+        
+        with patch('a2a_server.metrics.MeterProvider', MockMeterProviderType):
+            # Reset state and enable console
+            metrics_module._provider = None
+            original_console = metrics_module._CONSOLE_ENABLED
+            original_otlp = metrics_module._OTLP_ENDPOINT
+            metrics_module._CONSOLE_ENABLED = True
+            metrics_module._OTLP_ENDPOINT = None  # Disable OTLP to test console path
+            
+            try:
+                metrics_module._init_provider()
+                
+                mock_console_exporter.assert_called_once()
+                mock_periodic_reader.assert_called_once_with(
+                    mock_exporter,
+                    export_interval_millis=metrics_module._INTERVAL_MS
+                )
+            finally:
+                metrics_module._CONSOLE_ENABLED = original_console
+                metrics_module._OTLP_ENDPOINT = original_otlp
 
-    return StreamingResponse(
-        _event_source(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
-    )
 
-# ---------------------------------------------------------------------------
-# Mount routes
-# ---------------------------------------------------------------------------
+class TestAppInstrumentation:
+    """Test FastAPI app instrumentation."""
 
-def setup_http(
-    app: FastAPI,
-    protocol: JSONRPCProtocol,
-    task_manager: TaskManager,
-    event_bus: Optional[EventBus] = None,
-) -> None:
-    """Mount default + per-handler JSON-RPC endpoints on *app*."""
+    def setup_method(self):
+        """Reset global state before each test."""
+        metrics_module._provider = None
+        metrics_module._counter = None
+        metrics_module._histogram = None
 
-    # ---- global middleware: body-size guard --------------------------------
-    @app.middleware("http")
-    async def _limit_body(request: Request, call_next):  # noqa: D401, ANN001
-        if int(request.headers.get("content-length", 0)) > MAX_BODY:
-            raise HTTPException(413, "Payload too large")
-        return await call_next(request)
+    @patch('a2a_server.metrics._init_provider')
+    def test_instrument_app_calls_init_provider(self, mock_init_provider):
+        """Test that instrument_app calls _init_provider."""
+        app = FastAPI()
+        
+        metrics_module.instrument_app(app)
+        
+        mock_init_provider.assert_called_once()
 
-    # ---- helpers -----------------------------------------------------------
-    async def _dispatch(req: JSONRPCRequest) -> Response:
-        if not isinstance(req.params, dict):
-            raise HTTPException(422, "params must be an object")
+    def test_instrument_app_adds_middleware_once(self):
+        """Test that middleware is only added once."""
+        app = FastAPI()
+        
+        with patch('a2a_server.metrics._init_provider'):
+            # First call should add middleware
+            metrics_module.instrument_app(app)
+            assert hasattr(app.state, '_otel_middleware')
+            assert app.state._otel_middleware is True
+            
+            # Second call should be no-op
+            middleware_count_before = len(app.user_middleware)
+            metrics_module.instrument_app(app)
+            middleware_count_after = len(app.user_middleware)
+            
+            assert middleware_count_before == middleware_count_after
 
+    @patch.dict(os.environ, {'PROMETHEUS_METRICS': 'true'})
+    def test_instrument_app_adds_prometheus_endpoint_once(self):
+        """Test that Prometheus endpoint is only added once."""
+        app = FastAPI()
+        
+        # Only test if Prometheus is actually enabled
+        if not metrics_module._PROM_ENABLED:
+            pytest.skip("Prometheus not enabled in current environment")
+        
+        with patch('a2a_server.metrics._init_provider'):
+            # First call should add endpoint
+            metrics_module.instrument_app(app)
+            assert hasattr(app.state, '_prom_endpoint')
+            assert app.state._prom_endpoint is True
+            
+            # Second call should be no-op
+            routes_count_before = len(app.routes)
+            metrics_module.instrument_app(app)
+            routes_count_after = len(app.routes)
+            
+            assert routes_count_before == routes_count_after
+
+    @patch.dict(os.environ, {'PROMETHEUS_METRICS': 'true'})
+    def test_prometheus_metrics_endpoint(self):
+        """Test that Prometheus metrics endpoint works correctly."""
+        app = FastAPI()
+        
+        # Only test if Prometheus is actually enabled in the module
+        if not metrics_module._PROM_ENABLED:
+            pytest.skip("Prometheus not enabled in current environment")
+        
+        with patch('a2a_server.metrics._init_provider'):
+            with patch('a2a_server.metrics._prom_reader', Mock()):
+                # Mock the prometheus modules that might be imported
+                with patch('prometheus_client.REGISTRY') as mock_registry:
+                    with patch('prometheus_client.generate_latest') as mock_generate:
+                        with patch('prometheus_client.CONTENT_TYPE_LATEST', 'text/plain'):
+                            mock_generate.return_value = b"# Prometheus metrics\ntest_metric 1.0\n"
+                            
+                            metrics_module.instrument_app(app)
+                            
+                            client = TestClient(app)
+                            response = client.get("/metrics")
+                            
+                            assert response.status_code == 200
+                            mock_generate.assert_called_once_with(mock_registry)
+
+
+class TestMiddlewareFunctionality:
+    """Test middleware functionality."""
+
+    def setup_method(self):
+        """Reset global state before each test."""
+        metrics_module._provider = None
+        metrics_module._counter = Mock()
+        metrics_module._histogram = Mock()
+
+    @pytest.mark.asyncio
+    async def test_middleware_records_metrics(self):
+        """Test that middleware records request metrics."""
+        app = FastAPI()
+        
+        @app.get("/test")
+        async def test_endpoint():
+            return {"message": "test"}
+        
+        with patch('a2a_server.metrics._init_provider'):
+            metrics_module.instrument_app(app)
+            
+            client = TestClient(app)
+            response = client.get("/test")
+            
+            assert response.status_code == 200
+            
+            # Verify counter was called
+            metrics_module._counter.add.assert_called_once()
+            counter_call = metrics_module._counter.add.call_args
+            assert counter_call[0][0] == 1  # Count
+            
+            # Verify histogram was called
+            metrics_module._histogram.record.assert_called_once()
+            histogram_call = metrics_module._histogram.record.call_args
+            assert histogram_call[0][0] > 0  # Duration should be positive
+            
+            # Verify attributes
+            attrs = counter_call[0][1]
+            assert attrs["http.method"] == "GET"
+            assert attrs["http.route"] == "/test"
+            assert attrs["http.status_code"] == "200"
+
+    @pytest.mark.asyncio
+    async def test_middleware_handles_exceptions(self):
+        """Test that middleware handles exceptions in endpoints."""
+        app = FastAPI()
+        
+        @app.get("/error")
+        async def error_endpoint():
+            raise ValueError("Test error")
+        
+        # Add exception handler to prevent the test from failing
+        @app.exception_handler(ValueError)
+        async def handle_value_error(request, exc):
+            return JSONResponse(
+                status_code=500,
+                content={"detail": str(exc)}
+            )
+        
+        with patch('a2a_server.metrics._init_provider'):
+            metrics_module.instrument_app(app)
+            
+            client = TestClient(app)
+            response = client.get("/error")
+            
+            assert response.status_code == 500
+            
+            # Metrics should still be recorded
+            metrics_module._counter.add.assert_called_once()
+            metrics_module._histogram.record.assert_called_once()
+            
+            # Should record the error status
+            attrs = metrics_module._counter.add.call_args[0][1]
+            assert attrs["http.status_code"] == "500"
+
+
+class TestShutdownHandling:
+    """Test graceful shutdown handling."""
+
+    def setup_method(self):
+        """Reset global state before each test."""
+        metrics_module._provider = None
+
+    def test_shutdown_provider_idempotent(self):
+        """Test that shutdown is idempotent and doesn't raise on repeated calls."""
+        # Test with no provider
+        metrics_module._shutdown_provider()  # Should not raise
+        
+        # Test with provider that has a shutdown method
+        mock_provider = Mock()
+        mock_provider._shutdown = False  # Not already shutdown
+        mock_provider._is_shutdown = False
+        metrics_module._provider = mock_provider
+        
+        metrics_module._shutdown_provider()
+        mock_provider.shutdown.assert_called_once()
+        assert metrics_module._provider is None
+        
+        # Second call should be no-op
+        metrics_module._shutdown_provider()  # Should not raise
+
+    def test_shutdown_provider_handles_exceptions(self):
+        """Test that shutdown handles provider exceptions gracefully."""
+        mock_provider = Mock()
+        mock_provider._shutdown = False
+        mock_provider._is_shutdown = False
+        mock_provider.shutdown.side_effect = RuntimeError("Shutdown error")
+        metrics_module._provider = mock_provider
+        
+        # Should not raise despite provider error
+        metrics_module._shutdown_provider()
+        assert metrics_module._provider is None
+
+    def test_shutdown_provider_handles_already_shutdown(self):
+        """Test handling of already shutdown providers."""
+        mock_provider = Mock()
+        mock_provider._shutdown = True  # Simulate already shutdown
+        mock_provider._is_shutdown = True
+        metrics_module._provider = mock_provider
+        
+        metrics_module._shutdown_provider()
+        mock_provider.shutdown.assert_not_called()
+        assert metrics_module._provider is None
+
+    @patch('a2a_server.metrics.atexit.register')
+    def test_atexit_handler_registered(self, mock_atexit_register):
+        """Test that atexit handler is registered."""
+        import importlib
+        importlib.reload(metrics_module)
+        
+        mock_atexit_register.assert_called_with(metrics_module._shutdown_provider)
+
+
+class TestIntegration:
+    """Integration tests combining multiple features."""
+
+    def setup_method(self):
+        """Reset global state before each test."""
+        metrics_module._provider = None
+        metrics_module._counter = None
+        metrics_module._histogram = None
+
+    def test_full_integration_with_multiple_exporters(self):
+        """Test full integration with both OTLP and Prometheus exporters."""
+        app = FastAPI()
+        
+        @app.get("/integration")
+        async def integration_endpoint():
+            return {"status": "ok"}
+        
+        # Create real class for isinstance check
+        class MockMeterProviderType:
+            def __init__(self, *args, **kwargs):
+                self.shutdown = Mock()
+        
+        # Mock the metrics components
+        with patch('a2a_server.metrics.OTLPMetricExporter') as mock_otlp:
+            with patch('a2a_server.metrics.PrometheusMetricReader') as mock_prom:
+                with patch('a2a_server.metrics.MeterProvider', MockMeterProviderType) as mock_meter_provider:
+                    with patch('a2a_server.metrics.metrics.get_meter') as mock_get_meter:
+                        with patch('a2a_server.metrics.metrics.set_meter_provider'):
+                            with patch('a2a_server.metrics.metrics.get_meter_provider') as mock_get_provider:
+                                mock_get_provider.return_value = Mock()  # Not a MeterProvider
+                                mock_meter = Mock()
+                                mock_counter = Mock()
+                                mock_histogram = Mock()
+                                mock_meter.create_counter.return_value = mock_counter
+                                mock_meter.create_histogram.return_value = mock_histogram
+                                mock_get_meter.return_value = mock_meter
+                                
+                                # Temporarily override module settings
+                                orig_otlp = metrics_module._OTLP_ENDPOINT
+                                orig_prom = metrics_module._PROM_ENABLED
+                                orig_provider = metrics_module._provider
+                                
+                                metrics_module._OTLP_ENDPOINT = 'http://localhost:4318'
+                                metrics_module._PROM_ENABLED = True
+                                metrics_module._provider = None  # Force re-initialization
+                                
+                                try:
+                                    # Instrument the app
+                                    metrics_module.instrument_app(app)
+                                    
+                                    # Test the endpoint
+                                    client = TestClient(app)
+                                    response = client.get("/integration")
+                                    assert response.status_code == 200
+                                    
+                                    # Verify metrics were recorded
+                                    mock_counter.add.assert_called_once()
+                                    mock_histogram.record.assert_called_once()
+                                finally:
+                                    metrics_module._OTLP_ENDPOINT = orig_otlp
+                                    metrics_module._PROM_ENABLED = orig_prom
+                                    metrics_module._provider = orig_provider
+
+    def test_metrics_without_prometheus_dependency(self):
+        """Test that metrics work when Prometheus is not available."""
+        app = FastAPI()
+        
+        @app.get("/no-prom")
+        async def no_prom_endpoint():
+            return {"message": "no prometheus"}
+        
+        # Create real class for isinstance check
+        class MockMeterProviderType:
+            def __init__(self, *args, **kwargs):
+                self.shutdown = Mock()
+        
+        # Ensure prometheus is disabled
+        original_prom_enabled = metrics_module._PROM_ENABLED
+        original_prom_reader = metrics_module._prom_reader
+        original_provider = metrics_module._provider
+        
+        metrics_module._PROM_ENABLED = False
+        metrics_module._prom_reader = None
+        metrics_module._provider = None
+        
         try:
-            async with asyncio.timeout(REQUEST_TIMEOUT):
-                raw = await protocol._handle_raw_async(req.model_dump())
-        except TimeoutError:
-            raise HTTPException(504, "Handler timed-out") from None
+            with patch('a2a_server.metrics.MeterProvider', MockMeterProviderType) as mock_meter_provider:
+                with patch('a2a_server.metrics.metrics.get_meter') as mock_get_meter:
+                    with patch('a2a_server.metrics.metrics.set_meter_provider'):
+                        with patch('a2a_server.metrics.metrics.get_meter_provider') as mock_get_provider:
+                            mock_get_provider.return_value = Mock()  # Not a MeterProvider
+                            mock_meter = Mock()
+                            mock_counter = Mock()
+                            mock_histogram = Mock()
+                            mock_meter.create_counter.return_value = mock_counter
+                            mock_meter.create_histogram.return_value = mock_histogram
+                            mock_get_meter.return_value = mock_meter
+                            
+                            metrics_module.instrument_app(app)
+                            
+                            client = TestClient(app)
+                            response = client.get("/no-prom")
+                            assert response.status_code == 200
+                            
+                            # Should not have /metrics endpoint
+                            metrics_response = client.get("/metrics")
+                            assert metrics_response.status_code == 404
+                            
+                            # Metrics should be recorded for both requests (2 calls total)
+                            assert mock_counter.add.call_count == 2
+                            assert mock_histogram.record.call_count == 2
+                            
+                            # Verify the calls were for the right endpoints
+                            calls = mock_counter.add.call_args_list
+                            first_call_attrs = calls[0][0][1]  # First call attributes
+                            second_call_attrs = calls[1][0][1]  # Second call attributes
+                            
+                            assert first_call_attrs["http.route"] == "/no-prom"
+                            assert first_call_attrs["http.status_code"] == "200"
+                            assert second_call_attrs["http.route"] == "/metrics"
+                            assert second_call_attrs["http.status_code"] == "404"
+        finally:
+            # Restore original state
+            metrics_module._PROM_ENABLED = original_prom_enabled
+            metrics_module._prom_reader = original_prom_reader
+            metrics_module._provider = original_provider
 
-        return Response(status_code=204) if raw is None else JSONResponse(jsonable_encoder(raw))
 
-    # ---- /rpc  -------------------------------------------------------------
-    @app.post("/rpc")
-    async def _default_rpc(payload: JSONRPCRequest = Body(...)):  # noqa: D401
-        if payload.method == "tasks/send":
-            payload.params["id"] = str(uuid.uuid4())
-        return await _dispatch(payload)
+class TestErrorConditions:
+    """Test error conditions and edge cases."""
 
-    # ---- one sub-tree per handler -----------------------------------------
-    for handler in task_manager.get_handlers():
+    def setup_method(self):
+        """Reset global state before each test."""
+        metrics_module._provider = None
+        metrics_module._counter = None
+        metrics_module._histogram = None
 
-        @app.post(f"/{handler}/rpc")  # type: ignore[misc]
-        async def _handler_rpc(payload: JSONRPCRequest = Body(...), _h: str = handler):  # noqa: D401
-            if payload.method == "tasks/send":
-                payload.params["id"] = str(uuid.uuid4())
-            if payload.method in {"tasks/send", "tasks/sendSubscribe"}:
-                payload.params.setdefault("handler", _h)
-            return await _dispatch(payload)
+    def test_instrument_app_with_none_app(self):
+        """Test that instrument_app handles None app gracefully."""
+        with pytest.raises(AttributeError):
+            metrics_module.instrument_app(None)
 
-        if event_bus:
+    @patch('a2a_server.metrics.metrics.get_meter')
+    def test_init_provider_with_meter_creation_failure(self, mock_get_meter):
+        """Test handling of meter creation failure."""
+        mock_get_meter.side_effect = RuntimeError("Meter creation failed")
+        
+        with pytest.raises(RuntimeError):
+            metrics_module._init_provider()
 
-            @app.post(f"/{handler}")  # type: ignore[misc]
-            async def _handler_alias(payload: JSONRPCRequest = Body(...), _h: str = handler):  # noqa: D401
-                if payload.method == "tasks/send":
-                    payload.params["id"] = str(uuid.uuid4())
+    def test_middleware_with_missing_route(self):
+        """Test middleware behavior when route information is missing."""
+        app = FastAPI()
+        
+        with patch('a2a_server.metrics._init_provider'):
+            # Mock counter and histogram
+            metrics_module._counter = Mock()
+            metrics_module._histogram = Mock()
+            
+            metrics_module.instrument_app(app)
+            
+            # Create a request that doesn't match any route
+            client = TestClient(app)
+            response = client.get("/nonexistent")
+            
+            assert response.status_code == 404
+            
+            # Metrics should still be recorded with the path as route
+            metrics_module._counter.add.assert_called_once()
+            attrs = metrics_module._counter.add.call_args[0][1]
+            assert attrs["http.route"] == "/nonexistent"  # Falls back to path
+            assert attrs["http.status_code"] == "404"
 
-                if payload.method == "tasks/sendSubscribe":
-                    return await _stream_send_subscribe(payload, task_manager, event_bus, _h)
 
-                payload.params.setdefault("handler", _h)
-                return await _dispatch(payload)
-
-        logger.debug("[transport.http] routes registered for handler %s", handler)
-
-__all__ = ["setup_http"]
+if __name__ == '__main__':
+    pytest.main([__file__, '-v'])

@@ -3,7 +3,7 @@
 Builds spec-compliant AgentCards.
 
 * `url` → handler root  (…/chef_agent)
-* No extra discovery fields here - `app.py` adds rpcEndpoint / eventsEndpoint
+* No extra discovery fields here - `app.py` adds rpcEndpoint / eventsEndpoint
 """
 
 import logging
@@ -23,23 +23,23 @@ def create_agent_card(
     base_url: str,
     handler_cfg: Dict[str, Any],
 ) -> SpecAgentCard:
-    cfg = handler_cfg.get("agent_card", {})
+    cfg = handler_cfg.get("agent_card", {}) or {}  # Handle None case
 
     # canonical URLs ----------------------------------------------------------
-    handler_root = handler_root = cfg.get("url") or f"{base_url}/{handler_name}"
+    handler_root = cfg.get("url") or f"{base_url}/{handler_name}"
     # ------------------------------------------------------------------------
 
-    # capabilities
+    # capabilities - use both camelCase and snake_case for compatibility
     caps_cfg = cfg.get("capabilities", {})
     caps = AgentCapabilities(
         streaming=caps_cfg.get("streaming", True),
-        pushNotifications=caps_cfg.get("pushNotifications", False),
-        stateTransitionHistory=caps_cfg.get("stateTransitionHistory", False),
+        push_notifications=caps_cfg.get("pushNotifications", caps_cfg.get("push_notifications", False)),
+        state_transition_history=caps_cfg.get("stateTransitionHistory", caps_cfg.get("state_transition_history", False)),
     )
 
-    # default IO
-    default_in  = cfg.get("defaultInputModes",  ["text/plain"])
-    default_out = cfg.get("defaultOutputModes", ["text/plain"])
+    # default IO - check both field name formats
+    default_in = cfg.get("defaultInputModes") or cfg.get("default_input_modes") or ["text/plain"]
+    default_out = cfg.get("defaultOutputModes") or cfg.get("default_output_modes") or ["text/plain"]
 
     # skills
     skills_cfg = cfg.get("skills") or [{
@@ -52,16 +52,16 @@ def create_agent_card(
     }]
     skills: List[AgentSkill] = [AgentSkill(**s) for s in skills_cfg]
 
-    # assemble card
+    # assemble card - check both field name formats
     return SpecAgentCard(
         name=cfg.get("name", handler_name.replace("_", " ").title()),
         description=cfg.get("description", f"A2A handler for {handler_name}"),
-        url=handler_root,                         # <── key fix
+        url=handler_root,
         version=cfg.get("version", "1.0.0"),
-        documentationUrl=cfg.get("documentationUrl"),
+        documentation_url=cfg.get("documentationUrl") or cfg.get("documentation_url"),
         capabilities=caps,
-        defaultInputModes=default_in,
-        defaultOutputModes=default_out,
+        default_input_modes=default_in,
+        default_output_modes=default_out,
         skills=skills,
     )
 

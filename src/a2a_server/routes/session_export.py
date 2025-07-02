@@ -3,7 +3,7 @@
 """
 Session import / export utilities for the A2A server.
 
-Routes (all require “internal-admin” header)
+Routes (all require "internal-admin" header)
 -------------------------------------------
 GET    /sessions                       - list all known session-IDs
 GET    /sessions/{session_id}/export   - download a conversation (JSON)
@@ -39,7 +39,11 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 
 _ADMIN_HEADER = "X-Internal-Admin"
-_EXPECTED_SECRET = os.getenv("A2A_ADMIN_SECRET")  # optional
+
+
+def _get_admin_secret():
+    """Get admin secret, allowing for test overrides."""
+    return os.getenv("A2A_ADMIN_SECRET")
 
 
 async def _admin_guard(
@@ -54,7 +58,8 @@ async def _admin_guard(
     if internal_header is None:
         raise HTTPException(status_code=403, detail=f"Missing {_ADMIN_HEADER} header")
 
-    if _EXPECTED_SECRET and internal_header != _EXPECTED_SECRET:
+    expected = os.getenv("A2A_ADMIN_SECRET")
+    if expected and internal_header != expected:
         raise HTTPException(status_code=403, detail="Bad admin secret")
 
 
@@ -67,7 +72,8 @@ def _resolve_handler(request: Request, handler_name: str | None):
     """Return the TaskHandler instance (or raise 404)."""
     manager = request.app.state.task_manager
     if handler_name:
-        if handler_name not in manager.get_handlers():
+        handlers = manager.get_handlers()
+        if handler_name not in handlers:
             raise HTTPException(status_code=404, detail=f"Handler {handler_name} not found")
         return manager._handlers[handler_name]
 
@@ -182,8 +188,13 @@ def register_session_routes(app: FastAPI) -> None:
         session_data: Dict[str, Any] = Body(..., examples={"minimal": {"conversation": []}}),
         handler_name: str | None = None,
     ):
-        if not session_data.get("conversation"):
+        conversation = session_data.get("conversation")
+        if conversation is None:
             raise HTTPException(status_code=400, detail="Invalid payload: missing 'conversation' list")
+        if not isinstance(conversation, list):
+            raise HTTPException(status_code=400, detail="Invalid payload: 'conversation' must be a list")
+        if len(conversation) == 0:
+            raise HTTPException(status_code=400, detail="No messages imported")
 
         handler = _resolve_handler(request, handler_name or session_data.get("handler"))
         _check_capability(handler, "add_to_session", "session import")
@@ -194,7 +205,7 @@ def register_session_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=500, detail="Failed to create handler session")
 
         imported = 0
-        for msg in session_data["conversation"]:
+        for msg in conversation:
             role = (msg.get("role") or "").lower()
             content = msg.get("content", "")
             if not content:

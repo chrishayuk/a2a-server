@@ -18,13 +18,18 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 
 # ── internal imports ────────────────────────────────────────────────────
-from a2a_server.tasks.handlers.adk.session_enabled_adk_handler import (
-    SessionAwareTaskHandler,
-)
+try:
+    from a2a_server.tasks.handlers.adk.session_enabled_adk_handler import (
+        SessionAwareTaskHandler,
+    )
+except ImportError:
+    # Fallback for testing or when ADK handlers are not available
+    class SessionAwareTaskHandler:
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +41,7 @@ _ROUTES_DISABLED_ENV = "A2A_DISABLE_SESSION_ROUTES"
 _ADMIN_TOKEN_ENV = "A2A_ADMIN_TOKEN"
 
 
-def _admin_guard(x_a2a_admin_token: str | None = None) -> None:  # noqa: D401
+def _admin_guard(x_a2a_admin_token: str | None = Header(None, alias="X-A2A-Admin-Token")) -> None:  # noqa: D401
     """Reject requests when the admin token is missing/incorrect."""
     expected = os.getenv(_ADMIN_TOKEN_ENV)
     if expected and x_a2a_admin_token != expected:
@@ -74,8 +79,10 @@ def register_session_routes(app: FastAPI) -> None:  # noqa: D401
         session_store = request.app.state.session_store
 
         results: Dict[str, List[Dict[str, str]]] = {}
-        for h in task_manager.get_handlers():
-            handler = task_manager._handlers[h]
+        handlers = task_manager.get_handlers()
+        
+        for handler_name in handlers:
+            handler = task_manager._handlers[handler_name]
             if isinstance(handler, SessionAwareTaskHandler):
                 results[handler.name] = [
                     {
@@ -85,9 +92,15 @@ def register_session_routes(app: FastAPI) -> None:  # noqa: D401
                     for a2a_id, chuk_id in handler._session_map.items()
                 ]
 
+        total_sessions = 0
+        try:
+            total_sessions = len(await session_store.list_sessions())
+        except Exception as e:
+            logger.warning("Failed to get session count: %s", e)
+
         return {
             "handlers_with_sessions": results,
-            "total_sessions_in_store": len(await session_store.list_sessions()),
+            "total_sessions_in_store": total_sessions,
         }
 
     # ── /sessions/{id}/history - conversation log ───────────────────── #
@@ -111,12 +124,16 @@ def register_session_routes(app: FastAPI) -> None:  # noqa: D401
         handler = _resolve_handler(task_manager, handler_name)
         _ensure_session_capable(handler)
 
-        history = await handler.get_conversation_history(session_id)
-        return {
-            "session_id": session_id,
-            "handler": handler.name,
-            "messages": history,
-        }
+        try:
+            history = await handler.get_conversation_history(session_id)
+            return {
+                "session_id": session_id,
+                "handler": handler.name,
+                "messages": history,
+            }
+        except Exception as exc:
+            logger.exception("Error getting session history for %s: %s", session_id, exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     # ── /sessions/{id}/tokens - token usage ─────────────────────────── #
     @app.get(
@@ -139,12 +156,16 @@ def register_session_routes(app: FastAPI) -> None:  # noqa: D401
         handler = _resolve_handler(task_manager, handler_name)
         _ensure_session_capable(handler)
 
-        token_usage = await handler.get_token_usage(session_id)
-        return {
-            "session_id": session_id,
-            "handler": handler.name,
-            "token_usage": token_usage,
-        }
+        try:
+            token_usage = await handler.get_token_usage(session_id)
+            return {
+                "session_id": session_id,
+                "handler": handler.name,
+                "token_usage": token_usage,
+            }
+        except Exception as exc:
+            logger.exception("Error getting token usage for %s: %s", session_id, exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     logger.debug("Session routes registered")
 
@@ -157,7 +178,8 @@ def register_session_routes(app: FastAPI) -> None:  # noqa: D401
 def _resolve_handler(task_manager, name: Optional[str]):
     """Return the requested handler or the default one."""
     if name:
-        if name not in task_manager.get_handlers():
+        handlers = task_manager.get_handlers()
+        if name not in handlers:
             raise HTTPException(status_code=404, detail=f"Handler {name} not found")
         return task_manager._handlers[name]
 

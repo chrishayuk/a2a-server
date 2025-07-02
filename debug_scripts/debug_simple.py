@@ -1,4 +1,4 @@
-# debug_scripts/simple_test.py
+# debug_scripts/simple_test_script.py
 """
 Simple test to verify the ChukAgent fix is working.
 """

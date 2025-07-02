@@ -1,174 +1,242 @@
-# a2a_server/tasks/handlers/adk/google_adk_handler.py (FIXED)
+# a2a_server/tasks/handlers/adk/google_adk_handler.py
 """
-Google ADK Handler - Resilient wrapper for Google ADK agents.
+Clean Google ADK Handler - Sessions Auto-Expire
+-----------------------------------------------
 
-This handler provides resilience for Google ADK agents, automatically wrapping
-raw ADK agents and providing ADK-optimized settings with session support.
+Simplified version that relies on session auto-expiration rather than
+complex lifecycle management that was causing duplicate task creation.
 """
 import logging
-from typing import Optional, Dict, Any
+import asyncio
+from typing import Optional, Dict, Any, AsyncGenerator
 
-from a2a_server.tasks.handlers.resilient_handler import ResilientHandler
+from a2a_server.tasks.handlers.session_aware_task_handler import SessionAwareTaskHandler
+from a2a_json_rpc.spec import (
+    Message, TaskStatus, TaskState, TaskStatusUpdateEvent, 
+    TaskArtifactUpdateEvent, Artifact, TextPart
+)
 
 logger = logging.getLogger(__name__)
 
 
-class GoogleADKHandler(ResilientHandler):
+class GoogleADKHandler(SessionAwareTaskHandler):
     """
-    Resilient Google ADK Handler with ADK-optimized settings and session support.
+    Clean Google ADK Handler with auto-expiring sessions.
     
-    This handler automatically wraps raw ADK agents and provides resilience
-    with settings optimized for ADK agents' typical usage patterns.
+    Relies on natural session expiration rather than complex lifecycle
+    management to prevent duplicate task creation issues.
     """
     
     def __init__(
         self,
-        agent,  # Raw ADK agent or already wrapped handler
+        agent,  # ADK agent or adapter
         name: Optional[str] = None,
-        circuit_breaker_threshold: int = 3,  # ADK agents are more stable
-        circuit_breaker_timeout: float = 180.0,  # Longer recovery time
-        task_timeout: float = 240.0,  # 4 minutes for ADK operations
-        max_retry_attempts: int = 2,  # Standard retry count
-        recovery_check_interval: float = 300.0,  # Check every 5 minutes
-        # ADK-specific settings
-        use_sessions: bool = False,
-        token_threshold: int = 4000,
-        summarization_strategy: str = "key_points",
-        session_store=None,
-        # Session parameters that need to be passed through
+        task_timeout: float = 240.0,
+        # Simple session parameters
         sandbox_id: Optional[str] = None,
-        infinite_context: bool = True,
-        max_turns_per_segment: int = 50,
-        default_ttl_hours: int = 24,
+        session_sharing: Optional[bool] = None,
+        shared_sandbox_group: Optional[str] = None,
         **kwargs
     ):
         """
-        Initialize Google ADK handler with resilience.
+        Initialize Google ADK handler with clean session handling.
         
         Args:
             agent: Google ADK agent instance (raw or wrapped)
             name: Handler name (auto-detected if None)
-            circuit_breaker_threshold: Failures before circuit opens (default: 3)
-            circuit_breaker_timeout: Circuit open time (default: 180s)
             task_timeout: Max time per task (default: 240s)
-            max_retry_attempts: Max retries (default: 2)
-            recovery_check_interval: Recovery check frequency (default: 300s)
-            use_sessions: Whether to enable session support
-            token_threshold: Token limit for session management
-            summarization_strategy: How to summarize long conversations
-            session_store: Optional session store to use
-            sandbox_id: Session sandbox ID (CRITICAL for shared sessions)
-            infinite_context: Whether to use infinite context
-            max_turns_per_segment: Max turns per segment
-            default_ttl_hours: Default TTL for sessions
-            **kwargs: Additional arguments
+            sandbox_id: Session sandbox ID
+            session_sharing: Whether to enable session sharing
+            shared_sandbox_group: Group for shared sessions
+            **kwargs: Additional arguments passed to SessionAwareTaskHandler
         """
-        # Store ADK-specific settings
-        self.use_sessions = use_sessions
-        self.token_threshold = token_threshold
-        self.summarization_strategy = summarization_strategy
-        self.session_store = session_store
-        
         # Wrap the agent if needed
-        wrapped_agent = self._wrap_adk_agent(agent)
+        self.agent = self._wrap_adk_agent(agent)
+        self.task_timeout = task_timeout
         
-        # CRITICAL: Pass session parameters to ResilientHandler if sessions are enabled
-        session_kwargs = {}
-        if use_sessions:
-            session_kwargs.update({
-                'sandbox_id': sandbox_id,
-                'infinite_context': infinite_context,
-                'token_threshold': token_threshold,
-                'max_turns_per_segment': max_turns_per_segment,
-                'default_ttl_hours': default_ttl_hours,
-                'session_store': session_store,
-            })
-            logger.info(f"🔗 ADK agent '{name}' using external sessions with sandbox: {sandbox_id}")
-        else:
-            logger.info(f"🔧 ADK agent '{name}' using internal ADK sessions only")
+        # Detect name
+        detected_name = name or self._detect_agent_name()
         
+        # Simple session configuration
+        effective_sandbox = sandbox_id or f"adk-{detected_name}"
+        if shared_sandbox_group:
+            session_sharing = True
+            effective_sandbox = shared_sandbox_group
+        
+        # Initialize with session support
         super().__init__(
-            agent=wrapped_agent,
-            name=name or "google_adk",
-            circuit_breaker_threshold=circuit_breaker_threshold,
-            circuit_breaker_timeout=circuit_breaker_timeout,
-            task_timeout=task_timeout,
-            max_retry_attempts=max_retry_attempts,
-            recovery_check_interval=recovery_check_interval,
-            **session_kwargs,  # ← CRITICAL: Pass session parameters
+            name=detected_name,
+            sandbox_id=effective_sandbox,
+            session_sharing=session_sharing,
+            shared_sandbox_group=shared_sandbox_group,
             **kwargs
         )
         
-        logger.info(f"Initialized GoogleADKHandler '{self._name}' with ADK-optimized settings")
+        session_type = "SHARED" if self.session_sharing else "ISOLATED"
+        logger.debug(f"Initialized GoogleADKHandler '{self.name}' with {session_type} sessions (CLEAN - auto-expire)")
     
     def _wrap_adk_agent(self, agent):
-        """Wrap ADK agent with the ADKAgentAdapter if needed."""
-        # If it already has invoke/stream methods, it's already wrapped
-        if hasattr(agent, 'invoke') and hasattr(agent, 'stream'):
-            logger.info(f"🔧 Agent already has invoke/stream methods: {type(agent)}")
+        """Wrap ADK agent with adapter if needed."""
+        # If it already has invoke method, use it
+        if hasattr(agent, 'invoke'):
+            logger.debug(f"Agent already has invoke method: {type(agent)}")
             return agent
         
-        # If it's already a TaskHandler (has process_task), use it directly
-        if hasattr(agent, 'process_task'):
-            logger.info(f"🔧 Agent is already a TaskHandler: {type(agent)}")
-            return agent
-        
-        # Check if it's a raw Google ADK Agent
+        # Check if it's a raw Google ADK Agent that needs wrapping
         if self._is_raw_adk_agent(agent):
             try:
-                # Import and wrap with ADKAgentAdapter
                 from a2a_server.tasks.handlers.adk.adk_agent_adapter import ADKAgentAdapter
-                
                 wrapped = ADKAgentAdapter(agent)
-                logger.info(f"✅ Wrapped raw ADK agent with ADKAgentAdapter: {type(agent)} -> {type(wrapped)}")
+                logger.debug(f"Wrapped raw ADK agent: {type(agent)} -> ADKAgentAdapter")
                 return wrapped
-                
             except ImportError as e:
-                logger.error(f"❌ Could not import ADKAgentAdapter: {e}")
+                logger.error(f"Could not import ADKAgentAdapter: {e}")
                 return agent
             except Exception as e:
-                logger.error(f"❌ Failed to wrap ADK agent: {e}")
+                logger.error(f"Failed to wrap ADK agent: {e}")
                 return agent
         
-        # Otherwise, use the agent directly and hope for the best
-        logger.warning(f"⚠️ Using agent directly without wrapping: {type(agent)}")
+        # Use agent directly
+        logger.warning(f"Using agent directly without wrapping: {type(agent)}")
         return agent
     
     def _is_raw_adk_agent(self, agent) -> bool:
-        """Check if this is a raw Google ADK Agent that needs wrapping."""
+        """Check if this is a raw Google ADK Agent."""
         try:
-            # Check for ADK Agent class or module
-            agent_class = agent.__class__
-            module_name = agent_class.__module__
-            class_name = agent_class.__name__
+            class_name = agent.__class__.__name__
+            module_name = agent.__class__.__module__
             
-            # Look for Google ADK indicators
-            adk_indicators = [
-                'google.adk',
-                'Agent',  # Common ADK class name
-            ]
+            # Handle special mock cases where __module__ is overridden as a property
+            if hasattr(agent, '__module__') and isinstance(getattr(type(agent), '__module__', None), property):
+                module_name = agent.__module__
             
-            is_adk = any(indicator in module_name or indicator in class_name for indicator in adk_indicators)
+            # Look for ADK indicators - must be from google.adk module
+            is_adk_module = 'google.adk' in module_name
             
-            # Additional check: ADK agents typically have name, model, instruction attributes
+            # Check for ADK attributes
             has_adk_attrs = (
                 hasattr(agent, 'name') and 
                 hasattr(agent, 'model') and 
-                (hasattr(agent, 'instruction') or hasattr(agent, 'description'))
+                hasattr(agent, 'instruction')
             )
             
-            result = is_adk and has_adk_attrs
+            # Must be from google.adk module AND have ADK attributes AND lack invoke method
+            return is_adk_module and has_adk_attrs and not hasattr(agent, 'invoke')
             
-            if result:
-                logger.info(f"🔍 Detected raw ADK agent: {class_name} from {module_name}")
-            else:
-                logger.debug(f"🔍 Not a raw ADK agent: {class_name} from {module_name}")
+        except Exception:
+            return False
+    
+    def _detect_agent_name(self) -> str:
+        """Detect agent name."""
+        if hasattr(self.agent, 'name'):
+            return str(self.agent.name).replace(' ', '_').lower()
+        elif hasattr(self.agent, '__class__'):
+            class_name = self.agent.__class__.__name__.lower()
+            # Remove common suffixes
+            for suffix in ['agent', 'handler', 'client']:
+                if class_name.endswith(suffix):
+                    class_name = class_name[:-len(suffix)]
+                    break
+            return class_name or "google_adk"
+        else:
+            return "google_adk"
+    
+    def _extract_message_content(self, message: Message) -> str:
+        """Extract text content from A2A message."""
+        if not message.parts:
+            return ""
             
-            return result
+        text_parts = []
+        for part in message.parts:
+            try:
+                if hasattr(part, "text") and part.text:
+                    text_parts.append(part.text)
+                elif hasattr(part, "model_dump"):
+                    part_dict = part.model_dump()
+                    if "text" in part_dict and part_dict["text"]:
+                        text_parts.append(part_dict["text"])
+            except Exception:
+                pass
+                
+        return " ".join(text_parts)
+    
+    async def process_task(
+        self, 
+        task_id: str, 
+        message: Message, 
+        session_id: Optional[str] = None
+    ) -> AsyncGenerator[TaskStatusUpdateEvent | TaskArtifactUpdateEvent, None]:
+        """
+        Process a task with the ADK agent using clean session handling.
+        """
+        
+        logger.debug(f"Processing task {task_id[:8]}... with handler '{self.name}'")
+        
+        # Working status
+        yield TaskStatusUpdateEvent(
+            id=task_id,
+            status=TaskStatus(state=TaskState.working),
+            final=False
+        )
+        
+        # Extract user content
+        user_content = self._extract_message_content(message)
+        if not user_content.strip():
+            logger.warning(f"Empty message content for task {task_id}")
+            user_content = "Hello"
+        
+        # Add user message to session (sessions auto-expire, no manual cleanup needed)
+        if session_id and user_content:
+            await self.add_user_message(session_id, user_content)
+        
+        try:
+            # Direct synchronous call to agent
+            result = self.agent.invoke(user_content, session_id)
+            
+            # Add AI response to session (auto-expires naturally)
+            if session_id and result:
+                await self.add_ai_response(session_id, result)
+            
+            # Emit response artifact
+            response_artifact = Artifact(
+                name="response",
+                parts=[TextPart(type="text", text=result or "No response")],
+                index=0
+            )
+            yield TaskArtifactUpdateEvent(id=task_id, artifact=response_artifact)
+            
+            # Success
+            logger.info(f"Task {task_id[:8]}... completed successfully")
+            yield TaskStatusUpdateEvent(
+                id=task_id,
+                status=TaskStatus(state=TaskState.completed),
+                final=True
+            )
             
         except Exception as e:
-            logger.debug(f"🔍 Error checking if agent is raw ADK: {e}")
-            return False
+            error_msg = f"Task failed: {str(e)}"
+            logger.error(f"Task {task_id[:8]}... {error_msg}")
+            yield TaskStatusUpdateEvent(
+                id=task_id,
+                status=TaskStatus(state=TaskState.failed),
+                final=True
+            )
+    
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get health status."""
+        base_health = super().get_health_status()
+        
+        # Add ADK-specific info
+        base_health.update({
+            "handler_type": "google_adk",
+            "agent_type": type(self.agent).__name__,
+            "has_invoke": hasattr(self.agent, 'invoke'),
+            "has_stream": hasattr(self.agent, 'stream'),
+            "task_timeout": self.task_timeout,
+            "session_lifecycle": "auto_expire_no_manual_cleanup",
+        })
+        
+        return base_health
 
 
 # Export class

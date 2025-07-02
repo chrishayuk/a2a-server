@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
 # a2a_server/session/manager.py
 """
-Session management factory for the A2A server.
-
-Provides a unified interface for initializing and managing session components:
-- Session store providers (memory, Redis)
-- Session lifecycle management
-- Route registration
+Provides a unified interface for initializing session components WITHOUT
+the SessionLifecycleManager that was causing duplicate task creation.
+Sessions now rely on natural auto-expiration through TTL.
 """
-
 import logging
-from typing import Dict, Optional, Any, Tuple
 import importlib
-
+from typing import Dict, Optional, Any, Tuple
 from fastapi import FastAPI
 
-# Session components
-from a2a_server.session.lifecycle import SessionLifecycleManager
-
+# logger
 logger = logging.getLogger(__name__)
 
 # Known session store providers
@@ -29,9 +22,12 @@ def initialize_session_components(
     app: FastAPI,
     task_manager: Any,
     session_config: Dict[str, Any]
-) -> Tuple[Optional[Any], Optional[SessionLifecycleManager]]:
+) -> Tuple[Optional[Any], Optional[Any]]:
     """
     Initialize session components based on configuration.
+    
+    CLEANED VERSION: No SessionLifecycleManager to prevent duplicate task creation.
+    Sessions now rely on natural TTL-based expiration.
     
     Args:
         app: The FastAPI application
@@ -39,7 +35,7 @@ def initialize_session_components(
         session_config: Session configuration dictionary
         
     Returns:
-        Tuple of (session_store, lifecycle_manager)
+        Tuple of (session_store, None) - lifecycle_manager removed
     """
     # Check if sessions are enabled
     if not session_config.get("enabled", False):
@@ -54,23 +50,18 @@ def initialize_session_components(
             logger.warning("Failed to create session store")
             return None, None
         
-        logger.info("Initialized %s session store", store_type)
-        
-        # Initialize session lifecycle manager
-        lifecycle_manager = SessionLifecycleManager(
-            task_manager,
-            max_session_age=session_config.get("max_age", 86400),  # 24 hours default
-            cleanup_interval=session_config.get("cleanup_interval", 3600)  # 1 hour default
-        )
+        logger.info("Initialized %s session store with TTL-based auto-expiration", store_type)    
+        logger.info("Session lifecycle: Using TTL-based auto-expiration (no manual cleanup)")
         
         # Set store in app state
         app.state.session_store = store
-        app.state.session_lifecycle_manager = lifecycle_manager
+        # NOTE: No session_lifecycle_manager in app state
         
         # Register session API routes
         _register_session_routes(app)
         
-        return store, lifecycle_manager
+        return store, None  # Return None instead of lifecycle_manager
+        
     except Exception as e:
         logger.exception("Error initializing session components: %s", e)
         return None, None
@@ -159,26 +150,21 @@ def _register_session_routes(app: FastAPI) -> None:
 
 def setup_session_lifecycle_events(app: FastAPI) -> None:
     """
-    Set up FastAPI startup/shutdown events for session lifecycle management.
+    Set up FastAPI startup/shutdown events for session management.
+    
+    CLEANED VERSION: No lifecycle manager startup/shutdown since we removed it.
     
     Args:
         app: The FastAPI application
     """
-    if not hasattr(app.state, "session_lifecycle_manager"):
-        return
-    
-    lifecycle_manager = app.state.session_lifecycle_manager
-    
-    @app.on_event("startup")
-    async def start_session_lifecycle():
-        """Start the session lifecycle manager on application startup."""
-        await lifecycle_manager.start()
+    logger.info("Session lifecycle events: Using TTL-based expiration (no manual lifecycle)")
     
     @app.on_event("shutdown")
-    async def stop_session_lifecycle():
-        """Stop the session lifecycle manager on application shutdown."""
-        await lifecycle_manager.stop()
-        
-        # Also disconnect from session store if needed
+    async def cleanup_session_store():
+        """Clean shutdown of session store if needed."""
         if hasattr(app.state, "session_store") and hasattr(app.state.session_store, "disconnect"):
             await app.state.session_store.disconnect()
+            logger.info("Session store disconnected cleanly")
+    
+    # NOTE: No startup event for SessionLifecycleManager since we removed it
+    # Sessions now handle their own lifecycle through TTL expiration

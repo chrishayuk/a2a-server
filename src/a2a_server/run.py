@@ -49,7 +49,6 @@ def _build_app(cfg: dict, args) -> FastAPI:  # noqa: ANN001 - CLI helper
         use_discovery=use_discovery,
         handler_packages=handlers_cfg.get("handler_packages"),
         handlers_config=handlers_cfg,
-        enable_flow_diagnosis=args.enable_flow_diagnosis,
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
@@ -64,11 +63,16 @@ async def _serve(app: FastAPI, host: str, port: int, log_level: str) -> None:
         port=port,
         log_level=log_level.lower(),
         loop="asyncio",
-        proxy_headers=True,
-        forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "*"),
+        # Disable features that might cause Content-Length issues
+        proxy_headers=False,  # Disable proxy header processing
+        access_log=False,     # Disable access logging
+        server_header=False,  # Disable server header
+        date_header=False,    # Disable date header
+        # Use h11 with minimal configuration
+        http="h11",
     )
     server = uvicorn.Server(cfg)
-    logging.info("Starting A2A server on http://%s:%s", host, port)
+    logging.info("Starting A2A server on http://%s:%s (minimal config)", host, port)
 
     try:
         await server.serve()
