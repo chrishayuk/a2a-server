@@ -39,6 +39,13 @@ include = ["a2a_server*"] # keep or adjust as needed
 
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
+pythonpath = [
+    "src",               # Add src directory to Python path for pytest
+]
+testpaths = [
+    "tests",
+]
+asyncio_mode = "auto"
 
 [dependency-groups]
 dev = [

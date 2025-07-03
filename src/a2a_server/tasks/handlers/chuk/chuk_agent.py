@@ -1,4 +1,4 @@
-# a2a_server/tasks/handlers/chuk/chuk_agent.py (DEBUG VERSION)
+# a2a_server/tasks/handlers/chuk/chuk_agent.py
 """
 Pure ChukAgent class with comprehensive tool call debugging.
 """

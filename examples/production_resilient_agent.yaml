@@ -1,0 +1,175 @@
+# production_resilient_agent.yaml
+# Production configuration for a resilient A2A agent with ChukAgent + MCP tools
+
+# Handler configuration - uses ChukAgentHandler for resilience
+handler:
+  type: ChukAgentHandler
+  name: production_weather_agent
+  
+  # Resilience settings optimized for production
+  circuit_breaker_threshold: 3        # Open circuit after 3 failures
+  circuit_breaker_timeout: 60.0       # Reset circuit after 60 seconds
+  task_timeout: 120.0                 # 2 minute timeout per task
+  max_retry_attempts: 2               # Retry failed tasks twice
+  recovery_check_interval: 30.0       # Check for recovery every 30 seconds
+  
+  # Session configuration for cross-server persistence
+  session_sharing: true               # Enable session sharing
+  shared_sandbox_group: weather_agents # Group for load balancing
+  session_ttl_hours: 24              # Keep sessions for 24 hours
+  
+  # Agent factory function - creates ChukAgent instances
+  agent: !python/object:__main__.create_production_agent
+
+# Agent configuration passed to factory function
+agent_config:
+  name: WeatherAssistant
+  description: "Production weather assistant with resilient MCP tools"
+  provider: openai
+  model: gpt-4
+  
+  # Tool configuration with resilience
+  enable_tools: true
+  debug_tools: false                  # Disable debug in production
+  tool_timeout: 30.0                 # 30 second tool timeout
+  max_concurrency: 3                 # Limit concurrent tool calls
+  
+  # MCP server configuration with failover
+  mcp_transport: stdio
+  mcp_config_file: /etc/a2a/mcp_config.json
+  mcp_servers:
+    - weather_primary               # Primary weather service
+    - weather_backup               # Backup weather service  
+    - calculator                   # Math tools
+    - web_search                   # Web search capability
+  
+  # Session management
+  enable_sessions: true
+  infinite_context: true
+  token_threshold: 8000
+  max_turns_per_segment: 100
+  
+  # Custom instructions
+  instruction: |
+    You are WeatherAssistant, a helpful AI that provides accurate weather information
+    and performs calculations. You have access to reliable weather APIs and can
+    gracefully handle service interruptions by using cached data when needed.
+    
+    Always be helpful and provide fallback responses if your tools are unavailable.
+
+# MCP server configurations with health checks
+mcp_config:
+  servers:
+    weather_primary:
+      command: weather-mcp-server
+      args: ["--api-key", "${WEATHER_API_KEY}", "--region", "global"]
+      env:
+        WEATHER_CACHE_TTL: "300"      # 5 minute cache
+        WEATHER_FALLBACK_ENABLED: "true"
+      health_check:
+        endpoint: /health
+        interval: 30
+        timeout: 5
+        retries: 3
+    
+    weather_backup:
+      command: backup-weather-server
+      args: ["--mode", "backup"]
+      env:
+        BACKUP_DATA_PATH: "/var/cache/weather"
+      health_check:
+        endpoint: /status
+        interval: 60
+        timeout: 10
+    
+    calculator:
+      command: calc-mcp-server
+      args: ["--precision", "high"]
+      health_check:
+        endpoint: /ping
+        interval: 60
+        timeout: 3
+    
+    web_search:
+      command: search-mcp-server
+      args: ["--api-key", "${SEARCH_API_KEY}"]
+      env:
+        SEARCH_RATE_LIMIT: "100"      # 100 requests per minute
+        SEARCH_CACHE_TTL: "3600"      # 1 hour cache
+      health_check:
+        endpoint: /health
+        interval: 45
+        timeout: 10
+
+# Monitoring and alerting configuration  
+monitoring:
+  health_check_interval: 30           # Check agent health every 30 seconds
+  metrics_collection: true           # Enable Prometheus metrics
+  log_level: INFO                    # Production log level
+  
+  # Alert thresholds
+  alerts:
+    circuit_breaker_open:
+      enabled: true
+      webhook: "${ALERT_WEBHOOK_URL}"
+    
+    high_error_rate:
+      threshold: 0.1                 # Alert if >10% error rate
+      window: 300                    # Over 5 minute window
+      webhook: "${ALERT_WEBHOOK_URL}"
+    
+    mcp_server_down:
+      enabled: true
+      webhook: "${ALERT_WEBHOOK_URL}"
+    
+    memory_usage_high:
+      threshold: 0.8                 # Alert if >80% memory usage
+      webhook: "${ALERT_WEBHOOK_URL}"
+
+# Load balancing and scaling
+scaling:
+  min_instances: 2                   # Always run at least 2 instances
+  max_instances: 10                  # Scale up to 10 instances
+  target_cpu_utilization: 70        # Target 70% CPU utilization
+  scale_up_cooldown: 300             # Wait 5 minutes before scaling up again
+  scale_down_cooldown: 600           # Wait 10 minutes before scaling down
+
+# Security configuration
+security:
+  api_key_rotation_days: 30          # Rotate API keys monthly
+  session_encryption: true           # Encrypt session data
+  audit_logging: true               # Log all agent interactions
+  rate_limiting:
+    requests_per_minute: 60          # Limit to 60 requests per minute per user
+    burst_allowance: 10              # Allow bursts of 10 requests
+
+# Backup and disaster recovery
+backup:
+  session_data_backup: true
+  backup_interval_hours: 6           # Backup every 6 hours  
+  backup_retention_days: 30          # Keep backups for 30 days
+  backup_location: s3://a2a-backups/weather-agent/
+
+# Environment-specific overrides
+environments:
+  development:
+    agent_config:
+      debug_tools: true
+      provider: openai
+      model: gpt-3.5-turbo           # Cheaper model for dev
+    monitoring:
+      log_level: DEBUG
+    
+  staging:
+    handler:
+      circuit_breaker_threshold: 2   # More sensitive in staging
+    monitoring:
+      log_level: DEBUG
+    
+  production:
+    handler:
+      circuit_breaker_threshold: 5   # More tolerant in production
+    security:
+      audit_logging: true
+    backup:
+      enabled: true

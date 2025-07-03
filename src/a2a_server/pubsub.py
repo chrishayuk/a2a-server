@@ -58,12 +58,7 @@ class EventBus:
                 # Log error but continue with other queues
                 logger.warning(f"Failed to deliver event to subscriber: {e}")
                 failed_queues.append(q)
-
-        # Optionally remove persistently failing queues
-        # (This is a policy decision - you might want to keep them)
-        # for failed_q in failed_queues:
-        #     self.unsubscribe(failed_q)
-
+                
         # Detach background tasks so "Task was destroyed but is pending!" doesn't pop
         for t in background:
             t.add_done_callback(lambda _t: self._handle_background_task_result(_t))
