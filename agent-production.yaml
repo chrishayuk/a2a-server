@@ -29,62 +29,7 @@ logging:
 
 handlers:
   use_discovery: false
-  default_handler: perplexity_agent
-
-  # 🆕 UPDATED: Perplexity Agent - Now using factory function
-  perplexity_agent:
-    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
-    agent: a2a_server.sample_agents.perplexity_agent.create_perplexity_agent  # ✅ Factory function
-    name: perplexity_agent
-    
-    # Session and tool configuration
-    enable_sessions: true
-    enable_tools: false  # Start disabled, can enable SSE tools later
-    infinite_context: true
-    token_threshold: 6000
-    max_turns_per_segment: 30
-    session_ttl_hours: 24
-    
-    # Model configuration
-    provider: "openai"
-    model: "gpt-4o-mini"
-    streaming: true
-    
-    agent_card:
-      name: Perplexity Agent
-      description: "Advanced research agent with search capabilities and conversation memory"
-      url: "https://a2a-server.fly.dev/perplexity_agent"
-      version: "1.0.0"
-      documentationUrl: "https://a2a-server.fly.dev/perplexity_agent/docs"
-      provider:
-        organization: "chrishayuk"
-        url: "https://chrishayuk.io"
-      capabilities:
-        streaming: true
-        pushNotifications: false
-        tools: false  # Will show true when SSE tools enabled
-        sessions: true
-      authentication:
-        schemes:
-          - "None"
-      defaultInputModes:
-        - "text/plain"
-      defaultOutputModes:
-        - "text/plain"
-      skills:
-        - id: perplexity-search
-          name: Research & Analysis
-          description: "Deep research, information synthesis, and analytical reasoning with memory"
-          tags:
-            - research
-            - analysis
-            - synthesis
-            - conversational
-          examples:
-            - "What are the latest AI breakthroughs?"
-            - "Explain quantum computing applications"
-            - "Research the impact of climate change on agriculture"
-            - "Compare different programming languages for data science"
+  default_handler: chuk_pirate
 
   # 🔧 ENHANCED: ChukAgent Pirate - Full featured with sessions
   chuk_pirate:
@@ -146,6 +91,61 @@ handlers:
             - "How do I navigate by the stars?"
             - "What's the best way to manage a ship's crew?"
             - "Share some pirate wisdom about treasure hunting"
+
+  # 🆕 UPDATED: Perplexity Agent - Now using factory function
+  perplexity_agent:
+    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
+    agent: a2a_server.sample_agents.perplexity_agent.create_perplexity_agent  # ✅ Factory function
+    name: perplexity_agent
+    
+    # Session and tool configuration
+    enable_sessions: true
+    enable_tools: false  # Start disabled, can enable SSE tools later
+    infinite_context: true
+    token_threshold: 6000
+    max_turns_per_segment: 30
+    session_ttl_hours: 24
+    
+    # Model configuration
+    provider: "openai"
+    model: "gpt-4o-mini"
+    streaming: true
+    
+    agent_card:
+      name: Perplexity Agent
+      description: "Advanced research agent with search capabilities and conversation memory"
+      url: "https://a2a-server.fly.dev/perplexity_agent"
+      version: "1.0.0"
+      documentationUrl: "https://a2a-server.fly.dev/perplexity_agent/docs"
+      provider:
+        organization: "chrishayuk"
+        url: "https://chrishayuk.io"
+      capabilities:
+        streaming: true
+        pushNotifications: false
+        tools: false  # Will show true when SSE tools enabled
+        sessions: true
+      authentication:
+        schemes:
+          - "None"
+      defaultInputModes:
+        - "text/plain"
+      defaultOutputModes:
+        - "text/plain"
+      skills:
+        - id: perplexity-search
+          name: Research & Analysis
+          description: "Deep research, information synthesis, and analytical reasoning with memory"
+          tags:
+            - research
+            - analysis
+            - synthesis
+            - conversational
+          examples:
+            - "What are the latest AI breakthroughs?"
+            - "Explain quantum computing applications"
+            - "Research the impact of climate change on agriculture"
+            - "Compare different programming languages for data science"
 
   # 🔧 ENHANCED: ChukAgent Chef - Full featured with sessions
   chuk_chef:
