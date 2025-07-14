@@ -1,46 +1,75 @@
-# agent.yaml - Updated configuration with working factories and enhanced agents
+# agent.yaml
 server:
   host: 0.0.0.0
   port: 8000
 
-# Optional: Enable Redis for production session storage
-# session_store:
-#   backend: redis
-#   redis_url: redis://redis:6379/0
-
-# Logging configuration to reduce noise
+# Add logging configuration to reduce noise
 logging:
   level: "info"
   quiet_modules:
+    # Core framework noise
     "asyncio": "WARNING"
     "uvicorn": "WARNING"
     "uvicorn.access": "WARNING"
     "fastapi": "WARNING"
     "httpx": "ERROR"
+    
+    # Google ADK noise - Enhanced coverage
     "google": "WARNING"
     "google.adk": "WARNING"
     "google.adk.models": "ERROR"
     "google.adk.models.registry": "ERROR"
+    "google.adk.models.lite_llm": "ERROR"
+    "google.adk.runners": "WARNING"
+    "google.adk.sessions": "WARNING"
+    "google.adk.artifacts": "WARNING"
+    "google.adk.memory": "WARNING"
+    "google.adk.agents": "WARNING"
+    "google.genai": "WARNING"
+    
+    # LiteLLM noise
     "LiteLLM": "ERROR"
     "litellm": "ERROR"
+    "litellm.utils": "ERROR"
+    "litellm.llms": "ERROR"
+    
+    # CHUK modules - Reduce initialization verbosity
     "chuk_sessions": "WARNING"
+    "chuk_sessions.session_manager": "WARNING"
     "chuk_ai_session_manager": "WARNING"
+    "chuk_ai_session_manager.session_storage": "WARNING"
+    "chuk_llm": "WARNING"
+    "chuk_llm.configuration": "WARNING"
+    "chuk_llm.configuration.unified_config": "WARNING"
+    "chuk_llm.api": "WARNING"
+    "chuk_llm.api.providers": "WARNING"
+    
+    # A2A internal modules
+    "a2a_server.transport": "WARNING"
+    "a2a_server.transport.http": "WARNING"
+    "a2a_server.session_store_factory": "WARNING"
+    "a2a_server.tasks.handlers.session_aware_task_handler": "WARNING"
+    "a2a_server.tasks.handlers.chuk": "WARNING"
+    "a2a_server.tasks.handlers.chuk.chuk_agent": "WARNING"
+    "a2a_server.tasks.handlers.chuk.chuk_agent_handler": "WARNING"
     "a2a_server.tasks.discovery": "WARNING"
 
 handlers:
   use_discovery: false
-  default_handler: chuk_pirate
+  default_handler: chuk_pirate  # 🔧 FIX: Set this to an actual handler name
 
-  # 🔧 ENHANCED: ChukAgent Pirate - Full featured with sessions
+  # 🔧 Pirate Agent - ChukAgent-based with factory function
   chuk_pirate:
     type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
-    agent: a2a_server.sample_agents.chuk_pirate.create_pirate_agent
+    agent: a2a_server.sample_agents.chuk_pirate.create_pirate_agent  # ✅ Factory function
     name: chuk_pirate
     
-    # Session configuration
+    # Handler-level session configuration
     sandbox_id: "pirate_sessions"
     session_sharing: true
     shared_sandbox_group: "global_user_sessions"
+    
+    # Agent-level session configuration (passed to ChukAgent)
     enable_sessions: true
     infinite_context: true
     token_threshold: 4000
@@ -48,17 +77,20 @@ handlers:
     session_ttl_hours: 24
     
     # Model configuration
-    provider: "openai"
-    model: "gpt-4o-mini"
+    # provider: "openai"
+    # model: "gpt-4o-mini"
     streaming: true
+    
+    # Tool configuration
     enable_tools: false
+    debug_tools: false
     
     agent_card:
-      name: Pirate Captain (Advanced)
-      description: "Captain Blackbeard's Ghost with full conversation memory and maritime wisdom"
+      name: Pirate Agent
+      description: "Captain Blackbeard's Ghost - legendary pirate with authentic swagger and maritime wisdom"
       url: "https://a2a-server.fly.dev/chuk_pirate"
       version: "1.0.0"
-      documentationUrl: "https://a2a-server.fly.dev/chuk_pirate/docs"
+      documentationUrl: "https://a2a-server.fly.dev/pirate_agent/docs"
       provider:
         organization: "chrishayuk"
         url: "https://chrishayuk.io"
@@ -76,8 +108,8 @@ handlers:
         - "text/plain"
       skills:
         - id: pirate-wisdom
-          name: Pirate Wisdom & Tales
-          description: "Authentic pirate advice, sea tales, and maritime knowledge with full memory"
+          name: Pirate Wisdom
+          description: "Authentic pirate advice, sea tales, and maritime knowledge with conversation memory"
           tags:
             - pirate
             - sailing
@@ -85,78 +117,25 @@ handlers:
             - maritime
             - storytelling
             - conversational
-            - memory
           examples:
-            - "Tell me a pirate tale and remember my favorite stories"
+            - "Tell me a pirate tale"
             - "How do I navigate by the stars?"
             - "What's the best way to manage a ship's crew?"
             - "Share some pirate wisdom about treasure hunting"
+            - "Teach me a sea shanty"
 
-  # 🆕 UPDATED: Perplexity Agent - Now using factory function
-  perplexity_agent:
-    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
-    agent: a2a_server.sample_agents.perplexity_agent.create_perplexity_agent  # ✅ Factory function
-    name: perplexity_agent
-    
-    # Session and tool configuration
-    enable_sessions: true
-    enable_tools: false  # Start disabled, can enable SSE tools later
-    infinite_context: true
-    token_threshold: 6000
-    max_turns_per_segment: 30
-    session_ttl_hours: 24
-    
-    # Model configuration
-    provider: "openai"
-    model: "gpt-4o-mini"
-    streaming: true
-    
-    agent_card:
-      name: Perplexity Agent
-      description: "Advanced research agent with search capabilities and conversation memory"
-      url: "https://a2a-server.fly.dev/perplexity_agent"
-      version: "1.0.0"
-      documentationUrl: "https://a2a-server.fly.dev/perplexity_agent/docs"
-      provider:
-        organization: "chrishayuk"
-        url: "https://chrishayuk.io"
-      capabilities:
-        streaming: true
-        pushNotifications: false
-        tools: false  # Will show true when SSE tools enabled
-        sessions: true
-      authentication:
-        schemes:
-          - "None"
-      defaultInputModes:
-        - "text/plain"
-      defaultOutputModes:
-        - "text/plain"
-      skills:
-        - id: perplexity-search
-          name: Research & Analysis
-          description: "Deep research, information synthesis, and analytical reasoning with memory"
-          tags:
-            - research
-            - analysis
-            - synthesis
-            - conversational
-          examples:
-            - "What are the latest AI breakthroughs?"
-            - "Explain quantum computing applications"
-            - "Research the impact of climate change on agriculture"
-            - "Compare different programming languages for data science"
-
-  # 🔧 ENHANCED: ChukAgent Chef - Full featured with sessions
+  # 🔧 Chef Agent - ChukAgent-based with factory function  
   chuk_chef:
     type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
-    agent: a2a_server.sample_agents.chuk_chef.create_chef_agent
+    agent: a2a_server.sample_agents.chuk_chef.create_chef_agent  # ✅ Factory function
     name: chuk_chef
     
-    # Session configuration
+    # Handler-level session configuration
     sandbox_id: "chef_sessions"
     session_sharing: true
-    shared_sandbox_group: "culinary_sessions"
+    shared_sandbox_group: "chef_sessions"
+    
+    # Agent-level session configuration
     enable_sessions: true
     infinite_context: true
     token_threshold: 4000
@@ -164,14 +143,17 @@ handlers:
     session_ttl_hours: 24
     
     # Model configuration
-    provider: "openai"
-    model: "gpt-4o-mini"
+    # provider: "openai"
+    # model: "gpt-4o-mini"
     streaming: true
+    
+    # Tool configuration
     enable_tools: false
+    debug_tools: false
     
     agent_card:
-      name: Chef Gourmet (Advanced)
-      description: "Professional chef with conversation memory and personalized cooking assistance"
+      name: Chuk Chef Agent
+      description: "Professional chef powered by ChukAgent with full LLM capabilities and conversation memory"
       url: "https://a2a-server.fly.dev/chuk_chef"
       version: "1.0.0"
       documentationUrl: "https://a2a-server.fly.dev/chuk_chef/docs"
@@ -192,21 +174,46 @@ handlers:
         - "text/plain"
       skills:
         - id: gourmet-recipes
-          name: Personalized Recipe Creation
-          description: "Create recipes based on your preferences, dietary needs, and cooking history"
+          name: Gourmet Recipe Creation
+          description: "Create detailed, professional recipes with Chef Gourmet's expertise and conversation memory"
           tags:
             - cooking
             - recipes
             - gourmet
-            - personalized
-            - dietary
+            - chef
+            - professional
             - conversational
-            - memory
           examples:
-            - "Remember my dietary restrictions and suggest dinner"
-            - "Italian pasta carbonara with my preferred modifications"
-            - "What can I make with leftover ingredients from yesterday?"
-            - "Plan a week of meals based on my tastes"
+            - "Chocolate chip cookie recipe"
+            - "Italian pasta carbonara"
+            - "How to make perfect risotto"
+            - "Vegetarian lasagna recipe"
+            - "What can I substitute for eggs in baking?"
+
+  # 🔧 Perplexity Agent with factory function
+  perplexity_agent:
+    type: a2a_server.tasks.handlers.chuk.chuk_agent_handler.AgentHandler
+    agent: a2a_server.sample_agents.perplexity_agent.create_perplexity_agent  # ✅ Use factory function
+    name: perplexity_agent
+    
+    # Start with basic configuration to test
+    enable_sessions: false
+    enable_tools: true 
+    streaming: true
+    
+    agent_card:
+      name: Perplexity Agent
+      description: "Advanced research agent with search capabilities"
+      url: "https://a2a-server.fly.dev/perplexity_agent"
+      capabilities:
+        tools: false  # Will enable once basic functionality works
+        streaming: true
+        sessions: true
+      skills:
+        - id: research
+          name: Research
+          description: "Research assistance and information synthesis"
+          tags: [research, analysis]
 
   # 🔧 Time Agent with factory function
   time_agent:
@@ -272,26 +279,24 @@ handlers:
             - "What's the time difference between London and LA?"
             - "Help me schedule a meeting across timezones"
 
-
-  # 🔧 LEGACY: Google ADK Agents (kept for compatibility and comparison)
+  # 🔧 WORKING: Legacy Google ADK Agents (these are working from your logs)
   pirate_agent:
     type: a2a_server.tasks.handlers.adk.google_adk_handler.GoogleADKHandler
-    agent: a2a_server.sample_agents.pirate_agent.pirate_agent
+    agent: a2a_server.sample_agents.pirate_agent.pirate_agent  # ✅ This works
     name: pirate_agent
-    use_sessions: false  # Stateless by design
+    use_sessions: false
     agent_card:
-      name: Pirate Agent (Legacy)
-      description: "Simple pirate-speak converter without memory"
+      name: Legacy Pirate Agent
+      description: "Converts your text into authentic pirate-speak, arrr!"
       url: "https://a2a-server.fly.dev/pirate_agent"
       version: "0.1.0"
-      documentationUrl: "https://a2a-server.fly.dev/pirate_agent/docs"
+      documentationUrl: "https://a2a-server.fly.dev/legacy_pirate_agent/docs"
       provider:
         organization: "chrishayuk"
         url: "https://chrishayuk.io"
       capabilities:
         streaming: true
         pushNotifications: false
-        sessions: false
       authentication:
         schemes:
           - "None"
@@ -302,24 +307,24 @@ handlers:
       skills:
         - id: pirate-talk
           name: Pirate Talk
-          description: "Transform any message into swashbuckling pirate lingo (stateless)"
+          description: "Transform any message into swashbuckling pirate lingo"
           tags:
             - pirate
             - fun
             - language
-            - legacy
           examples:
             - "Turn this into pirate speak: Hello there!"
-            - "Arrr! Give me yer loot!"
+            - "Make this sound like a pirate: Good morning!"
 
   chef_agent:
     type: a2a_server.tasks.handlers.adk.google_adk_handler.GoogleADKHandler
-    agent: a2a_server.sample_agents.chef_agent.chef_agent
+    agent: a2a_server.sample_agents.chef_agent.chef_agent  # ✅ This works
     name: chef_agent
-    use_sessions: false  # Keep simple for comparison
+    use_sessions: false
+    sandbox_id: "adk_chef_sessions"
     agent_card:
-      name: Chef Agent (Legacy)
-      description: "Simple recipe suggestions without memory"
+      name: Chef Agent
+      description: "Your culinary companion for recipe suggestions and cooking advice"
       url: "https://a2a-server.fly.dev/chef_agent"
       version: "0.1.0"
       documentationUrl: "https://a2a-server.fly.dev/chef_agent/docs"
@@ -329,7 +334,6 @@ handlers:
       capabilities:
         streaming: true
         pushNotifications: false
-        sessions: false
       authentication:
         schemes:
           - "None"
@@ -340,20 +344,21 @@ handlers:
       skills:
         - id: recipe-generation
           name: Recipe Generation
-          description: "Quick recipe suggestions based on ingredients (stateless)"
+          description: "Create delicious recipes based on available ingredients"
           tags:
             - cooking
             - recipes
-            - quick
-            - legacy
+            - ingredients
           examples:
             - "What can I make with chicken, mushrooms, and rice?"
-            - "Quick dinner ideas"
+            - "Vegetarian recipe with spinach and cheese"
+            - "Quick dessert with chocolate and bananas"
 
   # 🎯 DEMO: Specialized handlers (optional - remove if not needed)
   time_ticker:
     type: a2a_server.tasks.handlers.time_ticker_handler.TimeTickerHandler
     name: time_ticker
+    agent: null
     agent_card:
       name: Time Ticker
       description: "Demonstrates streaming by showing current time for 10 seconds"
@@ -381,6 +386,7 @@ handlers:
   pirate_vision:
     type: a2a_server.tasks.handlers.pirate_vision_handler.PirateVisionHandler
     name: pirate_vision
+    agent: null
     agent_card:
       name: Pirate Vision
       description: "Analyzes images and describes them in colorful pirate language"
@@ -408,3 +414,4 @@ handlers:
           examples:
             - "What do you see in this image, matey?"
             - "Describe this picture like a pirate"
+

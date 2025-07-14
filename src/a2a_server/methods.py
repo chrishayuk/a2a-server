@@ -1,4 +1,4 @@
-# a2a_server/methods.py - Handle genuine duplicates from client bug
+# a2a_server/methods.py - FIXED: Use None instead of 'default' string
 
 import asyncio
 import logging
@@ -58,11 +58,13 @@ def _rpc(
             # Log request with endpoint info
             if method == "tasks/send":
                 message_preview = _extract_message_preview(params)
-                handler_name = params.get("handler", "default")
+                # 🔧 FIXED: Use None instead of 'default' for logging display
+                handler_name = params.get("handler") or "[default]"
                 logger.info(f"📤 RPC to {handler_name}: '{message_preview}...'")
             elif method == "tasks/sendSubscribe":
                 message_preview = _extract_message_preview(params, 60)
-                handler_name = params.get("handler", "default")
+                # 🔧 FIXED: Use None instead of 'default' for logging display
+                handler_name = params.get("handler") or "[default]"
                 logger.info(f"📡 Stream to {handler_name}: '{message_preview}...'")
             
             # Process request
@@ -206,7 +208,9 @@ def register_methods(protocol: JSONRPCProtocol, manager: TaskManager) -> None:
         The client has a bug where it sends the same request to both
         tasks/send (RPC) and tasks/sendSubscribe (stream) endpoints.
         """
-        handler_name = raw.get('handler', 'default')
+        # 🔧 FIXED: Use None instead of 'default' string
+        # This allows TaskManager to use the configured default handler
+        handler_name = raw.get('handler')  # Will be None if not specified
         session_id = p.session_id or "default"
         
         return await _handle_genuine_duplicate_request(
@@ -225,7 +229,9 @@ def register_methods(protocol: JSONRPCProtocol, manager: TaskManager) -> None:
         This endpoint often receives the same request as tasks/send due to
         a client bug. We need to handle this gracefully.
         """
-        handler_name = raw.get("handler", "default")
+        # 🔧 FIXED: Use None instead of 'default' string
+        # This allows TaskManager to use the configured default handler
+        handler_name = raw.get("handler")  # Will be None if not specified
         client_id = raw.get("id")
         session_id = p.session_id or "default"
         
