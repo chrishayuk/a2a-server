@@ -152,7 +152,7 @@ async def _handle_genuine_duplicate_request(
             manager, session_id, message, handler_name, task.id
         )
         
-        logger.info(f"✅ [{endpoint_type}] New task created: {task.id}")
+        logger.debug(f"✅ [{endpoint_type}] New task created: {task.id}")
         return Task.model_validate(task.model_dump()).model_dump(exclude_none=True, by_alias=True)
         
     except ValueError as exc:
