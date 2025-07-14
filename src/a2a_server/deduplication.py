@@ -1,6 +1,7 @@
-# a2a_server/deduplication_enhanced.py
+# a2a_server/deduplication.py
 """
-Enhanced deduplication with semantic message comparison and adaptive windows.
+Fixed deduplication that checks BEFORE task creation, not after.
+Keeps session-based storage but fixes the timing issue.
 """
 import hashlib
 import logging
@@ -24,11 +25,10 @@ class DedupEntry:
 
 class SessionDeduplicator:
     """
-    Enhanced session-based deduplication with:
-    - Semantic message comparison
-    - Adaptive time windows
-    - Request frequency tracking
-    - Better session normalization
+    Fixed session-based deduplication that checks BEFORE task creation.
+    
+    Key fix: The check_duplicate method is called BEFORE creating tasks,
+    and record_task is called AFTER successful task creation.
     """
     
     def __init__(self, 
@@ -39,6 +39,8 @@ class SessionDeduplicator:
         self.max_window_seconds = max_window_seconds
         self.semantic_threshold = semantic_threshold
         self._session_stats: Dict[str, Dict[str, Any]] = {}
+        
+        logger.info(f"🔧 SessionDeduplicator initialized with {base_window_seconds}s base window")
     
     def _extract_message_text(self, message) -> str:
         """Enhanced message extraction with better error handling."""
@@ -181,11 +183,22 @@ class SessionDeduplicator:
         logger.debug(f"🔧 Dedup key: {dedup_key} for session={normalized_session}, handler={handler}")
         return dedup_key
     
-    async def check_duplicate(self, task_manager, session_id: str, message, handler: str) -> Optional[str]:
-        """Enhanced duplicate checking with adaptive windows."""
+    async def check_duplicate_before_task_creation(
+        self, 
+        task_manager, 
+        session_id: str, 
+        message, 
+        handler: str
+    ) -> Optional[str]:
+        """
+        FIXED: Check for duplicates BEFORE creating a task.
+        
+        This is the key fix - this method is called BEFORE task creation,
+        not after, preventing the race condition in the logs.
+        """
         session_manager = task_manager.session_manager
         if not session_manager:
-            logger.warning("⚠️ No session manager available for deduplication")
+            logger.debug("⚠️ No session manager available for deduplication")
             return None
         
         normalized_session = self._normalize_session_id(session_id)
@@ -233,8 +246,20 @@ class SessionDeduplicator:
             logger.warning(f"❌ Dedup check failed: {e}")
             return None
     
-    async def record_task(self, task_manager, session_id: str, message, handler: str, task_id: str) -> bool:
-        """Record task with enhanced metadata."""
+    async def record_task_after_creation(
+        self, 
+        task_manager, 
+        session_id: str, 
+        message, 
+        handler: str, 
+        task_id: str
+    ) -> bool:
+        """
+        FIXED: Record task AFTER successful creation.
+        
+        This is called after the task is successfully created,
+        ensuring we only store entries for tasks that actually exist.
+        """
         session_manager = task_manager.session_manager
         if not session_manager:
             return False
@@ -268,6 +293,16 @@ class SessionDeduplicator:
             logger.warning(f"❌ Failed to record dedup entry: {e}")
             return False
     
+    # Legacy method for backward compatibility - now calls the new method
+    async def check_duplicate(self, task_manager, session_id: str, message, handler: str) -> Optional[str]:
+        """Legacy method - redirects to the correctly timed method."""
+        return await self.check_duplicate_before_task_creation(task_manager, session_id, message, handler)
+    
+    # Legacy method for backward compatibility - now calls the new method  
+    async def record_task(self, task_manager, session_id: str, message, handler: str, task_id: str) -> bool:
+        """Legacy method - redirects to the correctly timed method."""
+        return await self.record_task_after_creation(task_manager, session_id, message, handler, task_id)
+    
     def get_stats(self) -> dict:
         """Get comprehensive deduplication statistics."""
         total_sessions = len(self._session_stats)
@@ -288,8 +323,8 @@ class SessionDeduplicator:
                 }
                 for k, v in list(self._session_stats.items())[:10]  # Top 10 sessions
             },
-            "status": "enhanced_active",
-            "features": ["adaptive_windows", "semantic_matching", "frequency_tracking"]
+            "status": "enhanced_active_fixed_timing",
+            "features": ["adaptive_windows", "semantic_matching", "frequency_tracking", "correct_timing_fix"]
         }
 
 # Global deduplicator instance

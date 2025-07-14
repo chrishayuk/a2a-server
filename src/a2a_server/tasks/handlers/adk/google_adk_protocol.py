@@ -1,4 +1,4 @@
-# File: a2a_server/tasks/handlers/adk/google_adk_protocol.py
+# a2a_server/tasks/handlers/adk/google_adk_protocol.py
 from typing import AsyncIterable, Dict, Any, Optional, List, Protocol
 
 class GoogleADKAgentProtocol(Protocol):

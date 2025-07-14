@@ -8,7 +8,7 @@ TaskManager refactored to use **asyncio.TaskGroup** (Python ≥ 3.11) and to be
 robust against post-cancellation events coming from slow / non-cooperative
 handlers.
 
-FIXED: Added session_manager property for deduplication system.
+Added session_manager property for deduplication system.
 """
 
 import asyncio

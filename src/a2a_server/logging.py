@@ -1,4 +1,4 @@
-# a2a_server/logging.py - Fixed version without duplicates
+# a2a_server/logging.py
 
 from __future__ import annotations
 

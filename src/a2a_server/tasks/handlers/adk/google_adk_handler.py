@@ -143,22 +143,35 @@ class GoogleADKHandler(SessionAwareTaskHandler):
     
     def _extract_message_content(self, message: Message) -> str:
         """Extract text content from A2A message."""
-        if not message.parts:
+        if not message or not hasattr(message, 'parts') or not message.parts:
             return ""
             
         text_parts = []
         for part in message.parts:
             try:
+                # Try direct text attribute first
                 if hasattr(part, "text") and part.text:
-                    text_parts.append(part.text)
+                    text_parts.append(str(part.text))
+                # Try model_dump if available
                 elif hasattr(part, "model_dump"):
                     part_dict = part.model_dump()
                     if "text" in part_dict and part_dict["text"]:
-                        text_parts.append(part_dict["text"])
-            except Exception:
-                pass
+                        text_parts.append(str(part_dict["text"]))
+                # Try dict-like access
+                elif hasattr(part, '__getitem__'):
+                    try:
+                        text = part["text"]
+                        if text:
+                            text_parts.append(str(text))
+                    except (KeyError, TypeError):
+                        pass
+            except Exception as e:
+                logger.debug(f"Error extracting text from part {type(part)}: {e}")
+                continue
                 
-        return " ".join(text_parts)
+        result = " ".join(text_parts).strip()
+        logger.debug(f"Extracted message content: '{result}' from {len(message.parts)} parts")
+        return result
     
     async def process_task(
         self, 
