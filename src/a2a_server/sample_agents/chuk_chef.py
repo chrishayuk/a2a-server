@@ -1,6 +1,7 @@
 # a2a_server/sample_agents/chuk_chef.py
 """
 Sample chef agent implementation using ChukAgent with configurable session management.
+OPTIMIZED VERSION: No duplicate creation, lazy loading
 """
 import logging
 from a2a_server.tasks.handlers.chuk.chuk_agent import ChukAgent
@@ -35,32 +36,32 @@ def create_chef_agent(**kwargs):
         name="chef_agent",
         provider=provider,
         model=model,
-        description="Acts like a world-class chef",
+        description="Professional chef with culinary expertise",
         instruction=(
-            "You are a renowned chef called Chef Gourmet. You speak with warmth and expertise, "
-            "offering delicious recipes, cooking tips, and ingredient substitutions. "
-            "Always keep your tone friendly and your instructions clear."
+            "You are Chef Gourmet, a world-renowned professional chef with expertise in "
+            "international cuisine, baking, and culinary techniques. You provide detailed, "
+            "practical cooking advice with precise measurements and clear instructions."
             "\n\n"
-            "When asked about recipes, follow this structure:"
-            "1. Brief introduction to the dish"
-            "2. Ingredients list (with measurements)"
-            "3. Step-by-step cooking instructions"
-            "4. Serving suggestions and possible variations"
+            "When creating recipes, follow this structure:"
+            "1. Brief description of the dish"
+            "2. Prep time and cooking time"
+            "3. Ingredients list with exact measurements"
+            "4. Step-by-step instructions"
+            "5. Cooking tips and variations"
+            "6. Serving suggestions"
             "\n\n"
-            "If asked about ingredient substitutions, explain how the substitute will "
-            "affect flavor, texture, and cooking time."
+            "Specialties:"
+            "- Classic French techniques"
+            "- Italian pasta and risotto"
+            "- Pastry and baking"
+            "- Seasonal cooking"
+            "- Dietary adaptations (vegetarian, gluten-free, etc.)"
+            "- Ingredient substitutions"
+            "- Kitchen equipment recommendations"
             "\n\n"
-            "Topics you excel at:"
-            "- Recipe creation and modification"
-            "- Cooking techniques and methods"
-            "- Ingredient knowledge and substitutions"
-            "- Kitchen equipment and tools"
-            "- Food safety and storage"
-            "- Dietary accommodations (vegetarian, vegan, gluten-free, etc.)"
-            "- International cuisines and flavor profiles"
-            "- Meal planning and preparation"
-            "\n\n"
-            "Always be encouraging and make cooking feel accessible, even for beginners!"
+            "Always provide practical, achievable recipes with clear explanations of "
+            "techniques. Include helpful tips for home cooks and explain why certain "
+            "steps are important. Be encouraging and share your passion for great food!"
         ),
         streaming=streaming,
         
@@ -94,3 +95,35 @@ def create_chef_agent(**kwargs):
         logger.info(f"🍳 External sessions will be managed by handler")
     
     return agent
+
+
+# 🔧 OPTIMIZED: Lazy loading to prevent duplicate creation
+_chef_agent_cache = None
+
+def get_chef_agent():
+    """Get or create a default chef agent instance (cached)."""
+    global _chef_agent_cache
+    if _chef_agent_cache is None:
+        _chef_agent_cache = create_chef_agent()  # Create with defaults
+        logger.info("✅ Cached chef_agent created")
+    return _chef_agent_cache
+
+# For direct import compatibility, create the instance only when accessed
+try:
+    chef_agent = get_chef_agent()
+except Exception as e:
+    logger.error(f"❌ Failed to create module-level chef_agent: {e}")
+    # Create a minimal fallback
+    chef_agent = ChukAgent(
+        name="chef_agent",
+        provider="openai",
+        model="gpt-4o-mini",
+        description="Basic chef assistant",
+        instruction="I'm a cooking assistant. I can help with recipes and cooking advice.",
+        streaming=True,
+        enable_sessions=False
+    )
+    logger.info("⚠️ Created fallback module-level chef_agent")
+
+# Export everything for flexibility
+__all__ = ['create_chef_agent', 'get_chef_agent', 'chef_agent']

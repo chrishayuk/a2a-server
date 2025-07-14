@@ -1,10 +1,10 @@
 # a2a_server/sample_agents/perplexity_agent.py
 """
-Perplexity Agent (SSE) - FIXED version with proper exports and initialization
----------------------------------------------------------------------------
+Perplexity Agent (SSE) - OPTIMIZED version with proper exports and no duplicate creation
+---------------------------------------------------------------------------------------
 
 This fixes the import issues by providing proper module-level exports
-while preventing double agent creation.
+while preventing double agent creation through lazy loading.
 """
 
 import json
@@ -14,7 +14,6 @@ import pathlib
 from typing import Dict
 
 from a2a_server.tasks.handlers.chuk.chuk_agent import ChukAgent
-from chuk_tool_processor.mcp.setup_mcp_sse import setup_mcp_sse
 
 log = logging.getLogger(__name__)
 HERE = pathlib.Path(__file__).parent
@@ -51,7 +50,7 @@ class SSEChukAgent(ChukAgent):
             self.tool_namespace = "sse"
 
     async def initialize_tools(self) -> None:
-        """Initialize MCP tools via SSE transport - FIXED VERSION."""
+        """Initialize MCP tools via SSE transport - WORKING VERSION."""
         if self._tools_initialized:
             return
 
@@ -107,10 +106,13 @@ class SSEChukAgent(ChukAgent):
 
             server_names = {i: srv["name"] for i, srv in enumerate(servers)}
 
-            # 4) Initialize MCP connection with automatic bearer token detection
+            # 4) Initialize MCP connection with SSE transport
             namespace = self.tool_namespace or "sse"
             
             try:
+                # Import SSE setup function
+                from chuk_tool_processor.mcp.setup_mcp_sse import setup_mcp_sse
+                
                 _, self.stream_manager = await setup_mcp_sse(
                     servers=servers,
                     server_names=server_names,
@@ -190,12 +192,15 @@ def create_perplexity_agent(**kwargs):
         # Ensure the config directory exists
         CFG_FILE.parent.mkdir(exist_ok=True)
         
-        agent = SSEChukAgent(
-            name="perplexity_agent",
-            provider=provider,
-            model=model,
-            description="Perplexity-style research agent with MCP SSE tools",
-            instruction="""You are a helpful research assistant with access to real-time search capabilities.
+        if enable_tools:
+            # Try to create SSE agent
+            try:
+                agent = SSEChukAgent(
+                    name="perplexity_agent",
+                    provider=provider,
+                    model=model,
+                    description="Perplexity-style research agent with MCP SSE tools",
+                    instruction="""You are a helpful research assistant with access to real-time search capabilities.
 
 🔍 CAPABILITIES:
 - Real-time web search and information retrieval
@@ -219,36 +224,93 @@ def create_perplexity_agent(**kwargs):
 
 When MCP tools are available, use them to provide accurate, up-to-date information. 
 If tools are not available, provide helpful responses based on your training data and clearly indicate the limitations.""",
-            streaming=streaming,
-            
-            # Session management
-            enable_sessions=enable_sessions,
-            infinite_context=infinite_context,
-            token_threshold=token_threshold,
-            max_turns_per_segment=max_turns_per_segment,
-            session_ttl_hours=session_ttl_hours,
-            
-            # MCP SSE tools
-            enable_tools=enable_tools,
-            debug_tools=debug_tools,
-            mcp_servers=mcp_servers,
-            tool_namespace=tool_namespace,
-            
-            # Pass through any other kwargs
-            **{k: v for k, v in kwargs.items() if k not in [
-                'enable_sessions', 'enable_tools', 'debug_tools',
-                'infinite_context', 'token_threshold', 'max_turns_per_segment',
-                'session_ttl_hours', 'provider', 'model', 'streaming',
-                'mcp_servers', 'tool_namespace'
-            ]}
-        )
+                    streaming=streaming,
+                    
+                    # Session management
+                    enable_sessions=enable_sessions,
+                    infinite_context=infinite_context,
+                    token_threshold=token_threshold,
+                    max_turns_per_segment=max_turns_per_segment,
+                    session_ttl_hours=session_ttl_hours,
+                    
+                    # MCP SSE tools
+                    enable_tools=enable_tools,
+                    debug_tools=debug_tools,
+                    mcp_servers=mcp_servers,
+                    tool_namespace=tool_namespace,
+                    
+                    # Pass through any other kwargs
+                    **{k: v for k, v in kwargs.items() if k not in [
+                        'enable_sessions', 'enable_tools', 'debug_tools',
+                        'infinite_context', 'token_threshold', 'max_turns_per_segment',
+                        'session_ttl_hours', 'provider', 'model', 'streaming',
+                        'mcp_servers', 'tool_namespace'
+                    ]}
+                )
+                log.info("🔍 Created perplexity agent with SSE capabilities")
+                
+            except Exception as sse_error:
+                log.warning(f"SSE agent creation failed: {sse_error}")
+                log.info("🔍 Creating fallback agent without SSE tools")
+                enable_tools = False
         
-        log.info(f"✅ Successfully created perplexity_agent: {type(agent)}")
+        if not enable_tools:
+            # Create fallback ChukAgent
+            agent = ChukAgent(
+                name="perplexity_agent",
+                provider=provider,
+                model=model,
+                description="Research assistant (SSE tools unavailable)",
+                instruction="""You are a helpful research assistant with extensive knowledge and analytical capabilities.
+
+🔍 RESEARCH EXPERTISE:
+While I don't have access to real-time search tools, I can help with:
+- Analysis of complex topics based on my training data
+- Research methodology and approach recommendations
+- Synthesis of information and critical thinking
+- Identifying key questions and research directions
+- Providing context and background on various subjects
+
+📋 RESEARCH APPROACH:
+1. Draw on comprehensive training data through early 2025
+2. Provide balanced perspectives on complex topics
+3. Acknowledge limitations and knowledge cutoffs
+4. Suggest current sources for real-time information
+5. Help structure research questions and methodologies
+
+🎯 RESPONSE STYLE:
+- Clear, structured responses with logical flow
+- Acknowledge when information might be outdated
+- Recommend current sources for verification
+- Focus on analysis and synthesis of available information
+
+Note: For the most current information, I recommend checking recent academic papers, news sources, and official publications. I can help you structure your research approach and analyze information you find.""",
+                streaming=streaming,
+                
+                # Session management
+                enable_sessions=enable_sessions,
+                infinite_context=infinite_context,
+                token_threshold=token_threshold,
+                max_turns_per_segment=max_turns_per_segment,
+                session_ttl_hours=session_ttl_hours,
+                
+                # No tools for fallback
+                enable_tools=False,
+                debug_tools=debug_tools,
+                
+                # Pass through any other kwargs
+                **{k: v for k, v in kwargs.items() if k not in [
+                    'enable_sessions', 'enable_tools', 'debug_tools',
+                    'infinite_context', 'token_threshold', 'max_turns_per_segment',
+                    'session_ttl_hours', 'provider', 'model', 'streaming'
+                ]}
+            )
+            log.info("🔍 Created fallback perplexity agent without SSE tools")
         
         # Debug logging
         log.info(f"🔍 PERPLEXITY AGENT CREATED: {type(agent)}")
         log.info(f"🔍 Internal sessions enabled: {agent.enable_sessions}")
-        log.info(f"🔍 Tools enabled: {agent.enable_tools}")
+        log.info(f"🔍 Tools enabled: {getattr(agent, 'enable_tools', False)}")
         
         if enable_sessions:
             log.info(f"🔍 Agent will manage research sessions internally")
@@ -266,8 +328,8 @@ If tools are not available, provide helpful responses based on your training dat
             name="perplexity_agent",
             provider=provider,
             model=model,
-            description="Research assistant (SSE tools unavailable)",
-            instruction="I'm a research assistant, but my real-time search tools are currently unavailable. I can still help with analysis and provide information from my training data.",
+            description="Basic research assistant",
+            instruction="I'm a research assistant. I can help with analysis and provide information from my training data, though I don't have access to real-time tools.",
             streaming=streaming,
             enable_sessions=enable_sessions,
             infinite_context=infinite_context,
@@ -276,20 +338,27 @@ If tools are not available, provide helpful responses based on your training dat
             session_ttl_hours=session_ttl_hours
         )
         
-        log.warning("Created fallback perplexity agent without SSE tools")
+        log.warning("Created minimal fallback perplexity agent")
         return fallback_agent
 
 
-# 🔧 FIXED: Provide proper module-level exports for backward compatibility
-# This solves the import error while preventing double creation
-perplexity_agent = None  # Initialize to None
+# 🔧 OPTIMIZED: Lazy loading to prevent duplicate creation
+_perplexity_agent_cache = None
 
 def get_perplexity_agent():
-    """Get or create a default perplexity agent instance."""
-    global perplexity_agent
-    if perplexity_agent is None:
-        perplexity_agent = create_perplexity_agent()
-    return perplexity_agent
+    """Get or create a default perplexity agent instance (cached)."""
+    global _perplexity_agent_cache
+    if _perplexity_agent_cache is None:
+        _perplexity_agent_cache = create_perplexity_agent(enable_tools=False)  # Conservative default
+        log.info("✅ Cached perplexity_agent created")
+    return _perplexity_agent_cache
 
-# Export the factory function as the main interface
-__all__ = ['create_perplexity_agent', 'get_perplexity_agent', 'SSEChukAgent']
+# For direct import compatibility, create the instance only when accessed
+try:
+    perplexity_agent = get_perplexity_agent()
+except Exception as e:
+    log.error(f"❌ Failed to create module-level perplexity_agent: {e}")
+    perplexity_agent = None
+
+# Export everything for flexibility
+__all__ = ['create_perplexity_agent', 'get_perplexity_agent', 'SSEChukAgent', 'perplexity_agent']

@@ -12,6 +12,7 @@ import sys
 import types
 import time
 import traceback
+import json
 from typing import Iterator, List, Optional, Type, Dict, Any
 
 from a2a_server.tasks.handlers.task_handler import TaskHandler
@@ -33,6 +34,66 @@ except ModuleNotFoundError:  # pragma: no cover
     stub.iter_entry_points = lambda group: ()  # type: ignore[arg-type]
     sys.modules["pkg_resources"] = stub
     logger.debug("Created stub pkg_resources module (setuptools not installed)")
+
+
+def _make_hashable(obj):
+    """
+    Convert any object to a hashable representation for caching purposes.
+    
+    Args:
+        obj: Any object that needs to be made hashable
+        
+    Returns:
+        A hashable representation of the object
+    """
+    if isinstance(obj, dict):
+        return tuple(sorted((_make_hashable(k), _make_hashable(v)) for k, v in obj.items()))
+    elif isinstance(obj, (list, tuple)):
+        return tuple(_make_hashable(item) for item in obj)
+    elif isinstance(obj, set):
+        return tuple(sorted(_make_hashable(item) for item in obj))
+    elif hasattr(obj, '__dict__'):
+        # For objects with __dict__, use their string representation
+        return str(obj)
+    else:
+        # For basic types (int, str, bool, None, etc.)
+        try:
+            hash(obj)  # Test if it's already hashable
+            return obj
+        except TypeError:
+            # If not hashable, convert to string
+            return str(obj)
+
+
+def _create_agent_cache_key(agent_spec: str, agent_config: Dict[str, Any]) -> str:
+    """
+    Create a stable cache key for agent instances.
+    
+    Args:
+        agent_spec: The agent specification string (module.function)
+        agent_config: The configuration dictionary for the agent
+        
+    Returns:
+        A stable cache key string
+    """
+    try:
+        # Make the config hashable
+        hashable_config = _make_hashable(agent_config)
+        
+        # Create a stable hash using JSON serialization as backup
+        try:
+            config_hash = hash(hashable_config)
+        except TypeError:
+            # Fallback: use JSON string hash (slower but more reliable)
+            config_json = json.dumps(agent_config, sort_keys=True, default=str)
+            config_hash = hash(config_json)
+        
+        return f"{agent_spec}#{config_hash}"
+        
+    except Exception as e:
+        logger.warning(f"Failed to create stable cache key for agent {agent_spec}: {e}")
+        # Emergency fallback: use timestamp to ensure uniqueness
+        return f"{agent_spec}#{int(time.time() * 1000000)}"
 
 
 def _validate_agent_configuration(
@@ -552,9 +613,8 @@ def _register_explicit_handlers(
                         else:
                             logger.debug(f"⚠️ enable_sessions NOT found in agent config for {handler_name}")
                         
-                        # Create a unique key for this agent configuration
-                        config_items = tuple(sorted(agent_config.items()))
-                        agent_key = f"{agent_spec}#{hash(config_items)}"
+                        # Create a unique key for this agent configuration using the fixed function
+                        agent_key = _create_agent_cache_key(agent_spec, agent_config)
                         
                         # Check if we've already created this exact agent
                         global _CREATED_AGENTS

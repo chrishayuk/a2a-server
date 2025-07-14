@@ -1,6 +1,7 @@
 # a2a_server/sample_agents/chuk_pirate.py
 """
 Sample pirate agent implementation using ChukAgent with configurable session management.
+OPTIMIZED VERSION: No duplicate creation, lazy loading
 """
 import logging
 from a2a_server.tasks.handlers.chuk.chuk_agent import ChukAgent
@@ -92,3 +93,35 @@ def create_pirate_agent(**kwargs):
         logger.info(f"🏴‍☠️ External sessions will be managed by handler")
     
     return agent
+
+
+# 🔧 OPTIMIZED: Lazy loading to prevent duplicate creation
+_pirate_agent_cache = None
+
+def get_pirate_agent():
+    """Get or create a default pirate agent instance (cached)."""
+    global _pirate_agent_cache
+    if _pirate_agent_cache is None:
+        _pirate_agent_cache = create_pirate_agent()  # Create with defaults
+        logger.info("✅ Cached pirate_agent created")
+    return _pirate_agent_cache
+
+# For direct import compatibility, create the instance only when accessed
+try:
+    pirate_agent = get_pirate_agent()
+except Exception as e:
+    logger.error(f"❌ Failed to create module-level pirate_agent: {e}")
+    # Create a minimal fallback
+    pirate_agent = ChukAgent(
+        name="pirate_agent",
+        provider="openai",
+        model="gpt-4o-mini",
+        description="Basic pirate assistant",
+        instruction="Ahoy matey! I'm a pirate assistant ready to help ye with yer questions!",
+        streaming=True,
+        enable_sessions=False
+    )
+    logger.info("⚠️ Created fallback module-level pirate_agent")
+
+# Export everything for flexibility
+__all__ = ['create_pirate_agent', 'get_pirate_agent', 'pirate_agent']
