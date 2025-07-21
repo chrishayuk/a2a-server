@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "perplexity_server": {
-      "url": "http://localhost:8020",
-      "transport": "sse"
-    }
-  }
-}
