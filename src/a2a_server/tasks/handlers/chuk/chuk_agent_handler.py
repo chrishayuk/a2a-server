@@ -52,19 +52,19 @@ class ChukAgentHandler(ResilientHandler):
             **kwargs: Additional arguments (including agent factory parameters)
         """
         
-        # 🔧 NEW: Handle agent factory function with parameters
+        # 🔧 Handle agent factory function with parameters
         processed_agent = self._process_agent_with_params(agent, kwargs)
         
         # Extract handler-specific parameters and remove agent factory parameters
         handler_kwargs = self._extract_handler_params(kwargs)
         
-        # *** KEY FIX: Explicit session sharing detection ***
+        # *** Explicit session sharing detection ***
         if shared_sandbox_group and session_sharing is None:
             # Auto-enable session sharing when shared_sandbox_group is provided
             session_sharing = True
-            logger.info(f"Auto-enabling session sharing for shared_sandbox_group: {shared_sandbox_group}")
+            logger.debug(f"Auto-enabling session sharing for shared_sandbox_group: {shared_sandbox_group}")
         
-        # *** KEY FIX: Pass session sharing parameters to parent ***
+        # *** Pass session sharing parameters to parent ***
         super().__init__(
             agent=processed_agent,  # Use the processed agent (with parameters applied)
             name=name or "chuk_agent",
@@ -79,11 +79,13 @@ class ChukAgentHandler(ResilientHandler):
             **handler_kwargs  # Only pass handler-specific parameters
         )
         
-        # Log session sharing configuration
+        # Log session sharing configuration at appropriate levels
         if self.session_sharing:
-            logger.info(f"Initialized ChukAgentHandler '{self._name}' with SHARED sessions (group: {self.shared_sandbox_group})")
+            logger.info(f"Initialized ChukAgentHandler '{self._name}' with SHARED sessions")
+            logger.debug(f"Shared sandbox group: {self.shared_sandbox_group}")
         else:
-            logger.info(f"Initialized ChukAgentHandler '{self._name}' with ISOLATED sessions (sandbox: {self.sandbox_id})")
+            logger.info(f"Initialized ChukAgentHandler '{self._name}' with ISOLATED sessions")
+            logger.debug(f"Sandbox ID: {self.sandbox_id}")
 
     def _process_agent_with_params(self, agent, kwargs):
         """
@@ -99,19 +101,21 @@ class ChukAgentHandler(ResilientHandler):
         # If agent is callable (factory function), call it with appropriate parameters
         if callable(agent):
             agent_params = self._extract_agent_params(kwargs)
-            logger.info(f"🔧 Calling agent factory with parameters: {list(agent_params.keys())}")
+            
+            # Move detailed parameter info to debug
+            logger.debug(f"🔧 Calling agent factory with parameters: {list(agent_params.keys())}")
             logger.debug(f"🔧 Agent factory parameters: {agent_params}")
             
             try:
                 processed_agent = agent(**agent_params)
-                logger.info(f"✅ Successfully created agent via factory function")
+                logger.debug(f"✅ Successfully created agent via factory function")
                 return processed_agent
             except Exception as e:
                 logger.error(f"❌ Failed to create agent via factory function: {e}")
                 raise
         else:
             # Agent is already an instance or import path, use as-is
-            logger.info(f"🔧 Using agent directly (not a factory function)")
+            logger.debug(f"🔧 Using agent directly (not a factory function)")
             return agent
 
     def _extract_agent_params(self, kwargs):

@@ -1,7 +1,7 @@
 # a2a_server/sample_agents/time_agent.py
 """
 Time Agent - Assistant with time and timezone capabilities via MCP
-OPTIMIZED VERSION: No duplicate agent creation
+Enable MCP tools by default
 """
 import json
 import logging
@@ -19,7 +19,7 @@ def create_time_agent(**kwargs):
     """
     # Extract session-related parameters with defaults
     enable_sessions = kwargs.get('enable_sessions', False)  # Default to False for utility agents
-    enable_tools = kwargs.get('enable_tools', True)         # Default to True for MCP tools
+    enable_tools = kwargs.get('enable_tools', True)         # ✅ Default to True for MCP tools
     debug_tools = kwargs.get('debug_tools', False)
     infinite_context = kwargs.get('infinite_context', True)
     token_threshold = kwargs.get('token_threshold', 4000)
@@ -46,7 +46,7 @@ def create_time_agent(**kwargs):
             logger.info(f"🕒 MCP configuration created: {config_file}")
         except Exception as e:
             logger.warning(f"Failed to create time MCP config: {e}")
-            enable_tools = False
+            # Don't disable tools here - let the agent try to initialize and handle gracefully
     
     try:
         if enable_tools:
@@ -104,6 +104,7 @@ Always be precise with time information and explain any calculations you perform
                     ]}
                 )
                 logger.info("🕒 Time agent created successfully with MCP tools")
+                return agent
                 
             except Exception as mcp_error:
                 logger.warning(f"🕒 MCP initialization failed: {mcp_error}")
@@ -111,12 +112,12 @@ Always be precise with time information and explain any calculations you perform
                 enable_tools = False
                 
         if not enable_tools:
-            # Fallback without tools
+            # Fallback without tools - but still helpful
             agent = ChukAgent(
                 name="time_agent",
                 provider=provider,
                 model=model,
-                description="Time assistant (MCP tools unavailable)",
+                description="Time assistant (MCP tools unavailable - install with: uvx install mcp-server-time)",
                 instruction="""I'm a time assistant with comprehensive timezone knowledge.
 
 🌍 TIMEZONE EXPERTISE:
@@ -128,12 +129,16 @@ Always be precise with time information and explain any calculations you perform
 - Sydney: Australia/Sydney (AEST/AEDT, UTC+10/+11)
 
 I can help with:
-- General time zone information and conversions
-- Scheduling advice across timezones
-- Time-related calculations
-- Business hours in different regions
+✅ General time zone information and conversions
+✅ Scheduling advice across timezones
+✅ Time-related calculations and planning
+✅ Business hours in different regions
+✅ Daylight saving time explanations
 
-Note: For precise current times, I recommend checking your system clock or timeanddate.com as my real-time tools are temporarily unavailable.""",
+📝 Note: My real-time tools are temporarily unavailable. To enable them, run:
+   uvx install mcp-server-time
+
+For precise current times, check timeanddate.com or your system clock.""",
                 streaming=streaming,
                 
                 # Session management
@@ -151,6 +156,7 @@ Note: For precise current times, I recommend checking your system clock or timea
                 ]}
             )
             logger.info("🕒 Created fallback time agent - MCP tools unavailable")
+            return agent
             
     except Exception as e:
         logger.error(f"Failed to create time agent: {e}")
@@ -170,18 +176,7 @@ Note: For precise current times, I recommend checking your system clock or timea
             max_turns_per_segment=max_turns_per_segment,
             session_ttl_hours=session_ttl_hours
         )
-    
-    # Debug logging
-    logger.info(f"🕒 TIME AGENT CREATED: {type(agent)}")
-    logger.info(f"🕒 Internal sessions enabled: {agent.enable_sessions}")
-    logger.info(f"🕒 Tools enabled: {getattr(agent, 'enable_tools', False)}")
-    
-    if enable_sessions:
-        logger.info(f"🕒 Agent will manage time sessions internally")
-    else:
-        logger.info(f"🕒 External sessions will be managed by handler")
-    
-    return agent
+        return agent
 
 
 def _create_time_mcp_config(config_file: str):
@@ -211,22 +206,17 @@ def _create_time_mcp_config(config_file: str):
         raise
 
 
-# 🔧 OPTIMIZED: Lazy loading to prevent duplicate creation
+# 🔧 FIXED: Enable tools by default and add better error handling
 _time_agent_cache = None
 
 def get_time_agent():
     """Get or create a default time agent instance (cached)."""
     global _time_agent_cache
     if _time_agent_cache is None:
-        _time_agent_cache = create_time_agent(enable_tools=False)  # Conservative default
-        logger.info("✅ Cached time_agent created")
+        # ✅ FIXED: Enable tools by default, let it gracefully degrade if needed
+        _time_agent_cache = create_time_agent(enable_tools=True)  
+        logger.info("✅ Cached time_agent created with tools enabled")
     return _time_agent_cache
-
-# 🔧 OPTIMIZED: Create module-level agent only when accessed
-@property
-def time_agent():
-    """Module-level time agent instance (lazy loaded)."""
-    return get_time_agent()
 
 # For direct import compatibility, create the instance
 try:

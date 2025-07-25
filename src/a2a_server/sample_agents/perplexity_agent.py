@@ -1,10 +1,9 @@
 # a2a_server/sample_agents/perplexity_agent.py
 """
-Perplexity Agent (SSE) - COMPLETE CONFIG BYPASS
------------------------------------------------
+Perplexity Agent (SSE) - CLEAN VERSION
+--------------------------------------
 
-This version completely bypasses any config file dependencies and 
-manually sets up the MCP connection without relying on setup_mcp_sse.
+This version has cleaned up logging and proper error handling.
 """
 
 import asyncio
@@ -18,12 +17,8 @@ from a2a_server.tasks.handlers.chuk.chuk_agent import ChukAgent
 
 log = logging.getLogger(__name__)
 
-# DEBUG: Log when module is imported
-log.info("🔥 PERPLEXITY_AGENT MODULE: Module being imported!")
-log.info(f"🔥 PERPLEXITY_AGENT MODULE: Module name = {__name__}")
-log.info(f"🔥 PERPLEXITY_AGENT MODULE: File = {__file__}")
-
-
+# Clean module loading
+log.debug("Loading perplexity agent module")
 
 def _load_override(var: str) -> Dict[str, str]:
     """Load environment variable as JSON dict or return empty dict."""
@@ -36,29 +31,28 @@ def _load_override(var: str) -> Dict[str, str]:
         log.warning("Ignoring invalid %s (%s)", var, exc)
         return {}
 
-
 def get_mcp_servers_from_env() -> List[Dict[str, str]]:
     """Get MCP server configuration from environment variables."""
     
     # Debug: Log all relevant environment variables
-    log.info("🔍 DEBUG: Checking environment variables...")
-    log.info(f"🔍 MCP_SERVER_URL: {os.getenv('MCP_SERVER_URL', 'NOT SET')}")
-    log.info(f"🔍 MCP_SERVER_URL_MAP: {os.getenv('MCP_SERVER_URL_MAP', 'NOT SET')}")
-    log.info(f"🔍 MCP_SERVER_NAME_MAP: {os.getenv('MCP_SERVER_NAME_MAP', 'NOT SET')}")
-    log.info(f"🔍 MCP_BEARER_TOKEN: {'SET' if os.getenv('MCP_BEARER_TOKEN') else 'NOT SET'}")
+    log.debug("Checking SSE MCP environment variables...")
+    log.debug(f"MCP_SERVER_URL: {os.getenv('MCP_SERVER_URL', 'NOT SET')}")
+    log.debug(f"MCP_SERVER_URL_MAP: {os.getenv('MCP_SERVER_URL_MAP', 'NOT SET')}")
+    log.debug(f"MCP_SERVER_NAME_MAP: {os.getenv('MCP_SERVER_NAME_MAP', 'NOT SET')}")
+    log.debug(f"MCP_BEARER_TOKEN: {'SET' if os.getenv('MCP_BEARER_TOKEN') else 'NOT SET'}")
     
     # Load environment variable overrides
     name_override = _load_override("MCP_SERVER_NAME_MAP")
     url_override = _load_override("MCP_SERVER_URL_MAP")
     
-    log.info(f"🔍 DEBUG: Parsed name_override: {name_override}")
-    log.info(f"🔍 DEBUG: Parsed url_override: {url_override}")
+    log.debug(f"Parsed name_override: {name_override}")
+    log.debug(f"Parsed url_override: {url_override}")
     
     # Check for simple single server URL
     single_server_url = os.getenv('MCP_SERVER_URL')
     
     if single_server_url:
-        log.info(f"📡 Using single MCP server from MCP_SERVER_URL: {single_server_url}")
+        log.info(f"Using single SSE MCP server: {single_server_url[:50]}{'...' if len(single_server_url) > 50 else ''}")
         return [{
             "name": "perplexity_server",
             "url": single_server_url,
@@ -73,15 +67,14 @@ def get_mcp_servers_from_env() -> List[Dict[str, str]]:
                 "name": actual_name,
                 "url": server_url,
             })
-        log.info(f"📡 Using {len(servers)} MCP server(s) from URL map")
-        log.info(f"📡 Servers: {servers}")
+        log.info(f"Using {len(servers)} SSE MCP server(s) from URL map")
+        log.debug(f"Servers: {servers}")
         return servers
     
     # No MCP configuration found
-    log.warning("❌ No MCP server configuration found in environment variables")
-    log.info("💡 Set MCP_SERVER_URL or MCP_SERVER_URL_MAP to enable MCP tools")
+    log.debug("No SSE MCP server configuration found in environment variables")
+    log.debug("Set MCP_SERVER_URL or MCP_SERVER_URL_MAP to enable SSE MCP tools")
     return []
-
 
 class DirectMCPConnection:
     """Direct MCP connection that bypasses all config files."""
@@ -95,16 +88,16 @@ class DirectMCPConnection:
     async def connect(self):
         """Connect directly and trigger async tool population."""
         try:
-            log.critical("🚨 DIRECT_CONNECTION: Attempting direct connection")
+            log.debug("Attempting direct SSE connection")
             
             # Step 1: Get the registry provider directly
             try:
                 from chuk_tool_processor.registry.provider import ToolRegistryProvider
                 self.registry = await ToolRegistryProvider.get_registry()
-                log.critical("🚨 DIRECT_CONNECTION: Got tool registry directly")
+                log.debug("Got tool registry directly")
                 
                 # Step 2: Try to trigger async tool loading from your server
-                log.critical("🚨 DIRECT_CONNECTION: Attempting to trigger async tool loading...")
+                log.debug("Attempting to trigger async tool loading...")
                 
                 # Import the setup function to trigger the async server communication
                 try:
@@ -113,7 +106,7 @@ class DirectMCPConnection:
                     # Use the same pattern as the working example, but catch errors gracefully
                     server_names = {i: srv["name"] for i, srv in enumerate(self.servers)}
                     
-                    log.critical(f"🚨 DIRECT_CONNECTION: Calling setup_mcp_sse with servers: {self.servers}")
+                    log.debug(f"Calling setup_mcp_sse with {len(self.servers)} servers")
                     
                     try:
                         # This should trigger the async server communication
@@ -123,31 +116,29 @@ class DirectMCPConnection:
                             namespace=self.namespace,
                         )
                         
-                        log.critical("🚨 DIRECT_CONNECTION: setup_mcp_sse completed successfully!")
+                        log.info("✅ SSE MCP connection established")
                         
                         # Even if tools/list fails with 202, the connection should be established
                         # and tools may be populated asynchronously
                         
                     except Exception as setup_error:
-                        log.critical(f"🚨 DIRECT_CONNECTION: setup_mcp_sse failed (expected for async): {setup_error}")
+                        log.debug(f"SSE setup encountered expected async errors: {setup_error}")
                         # This is expected for async servers - they return errors but may still work
                         
                 except ImportError as import_error:
-                    log.critical(f"🚨 DIRECT_CONNECTION: Could not import setup_mcp_sse: {import_error}")
+                    log.error(f"Could not import setup_mcp_sse: {import_error}")
                 
                 # Step 3: Set up connection indicator
                 self.connected = True
-                log.critical("🚨 DIRECT_CONNECTION: Direct connection established, async tools may be loading")
+                log.debug("Direct SSE connection established, tools may load asynchronously")
                 return True
                 
             except Exception as registry_error:
-                log.critical(f"🚨 DIRECT_CONNECTION: Could not get registry: {registry_error}")
-                log.exception("Registry error:")
+                log.error(f"Could not get registry: {registry_error}")
                 return False
                 
         except Exception as e:
-            log.critical(f"🚨 DIRECT_CONNECTION: Direct connection failed: {e}")
-            log.exception("Connection error:")
+            log.error(f"Direct SSE connection failed: {e}")
             return False
     
     async def get_tools(self):
@@ -158,7 +149,7 @@ class DirectMCPConnection:
         try:
             tools = await self.registry.list_tools(self.namespace)
             if tools:
-                log.info(f"📋 Found {len(tools)} tools in registry")
+                log.info(f"Found {len(tools)} tools in registry")
                 tool_objects = []
                 for namespace, tool_name in tools:
                     tool_meta = await self.registry.get_metadata(tool_name, namespace)
@@ -170,12 +161,11 @@ class DirectMCPConnection:
                         })
                 return tool_objects
             else:
-                log.debug("📋 No tools found in registry yet")
+                log.debug("No tools found in registry yet")
                 return []
         except Exception as e:
             log.debug(f"Registry tools check failed: {e}")
             return []
-
 
 class ConfigBypassSSEChukAgent(ChukAgent):
     """
@@ -195,65 +185,64 @@ class ConfigBypassSSEChukAgent(ChukAgent):
     async def initialize_tools(self) -> None:
         """Initialize tools with complete config bypass."""
         if self._tools_initialized:
-            log.critical("🚨 INITIALIZE_TOOLS: Already initialized, skipping")
+            log.debug("Tools already initialized, skipping")
             return
 
         try:
-            log.critical("🚨 INITIALIZE_TOOLS: Starting config-bypass initialization")
+            log.info("🔧 Initializing SSE tools...")
 
             # Get servers from environment
             servers = get_mcp_servers_from_env()
 
             if not servers:
-                log.critical("🚨 INITIALIZE_TOOLS: No MCP servers configured")
+                log.warning("No SSE MCP servers configured")
                 self._tools_initialized = True
                 self.stream_manager = None
                 return
 
-            log.critical(f"🚨 INITIALIZE_TOOLS: Found {len(servers)} servers: {servers}")
+            log.debug(f"Found {len(servers)} SSE servers: {servers}")
 
             # Create direct connection instead of using setup_mcp_sse
             self.direct_connection = DirectMCPConnection(servers, self.tool_namespace)
             
             # Try to connect directly
             if await self.direct_connection.connect():
-                log.critical("🚨 INITIALIZE_TOOLS: Direct MCP connection established!")
+                log.info("SSE MCP connection established")
                 
                 # Test if we can get tools
                 tools = await self.direct_connection.get_tools()
                 if tools:
-                    log.critical(f"🚨 INITIALIZE_TOOLS: Found {len(tools)} tools via direct connection")
+                    log.info(f"Found {len(tools)} SSE tools")
                     for tool in tools[:3]:
-                        log.critical(f"  🔧 {tool.get('name', 'unknown')}")
+                        log.debug(f"  🔧 {tool.get('name', 'unknown')}")
                 else:
-                    log.critical("🚨 INITIALIZE_TOOLS: No tools available yet - waiting for async server...")
+                    log.debug("No SSE tools available yet - server may be async")
                     
                     # Wait for async server to process and populate registry
                     for wait_seconds in [2, 5, 10]:
-                        log.critical(f"🚨 INITIALIZE_TOOLS: Waiting {wait_seconds}s for async tools...")
+                        log.debug(f"Waiting {wait_seconds}s for async tools...")
                         await asyncio.sleep(wait_seconds)
                         
                         tools = await self.direct_connection.get_tools()
                         if tools:
-                            log.critical(f"🚨 INITIALIZE_TOOLS: Found {len(tools)} tools after {wait_seconds}s wait!")
+                            log.info(f"Found {len(tools)} SSE tools after {wait_seconds}s wait")
                             for tool in tools[:3]:
-                                log.critical(f"  🔧 {tool.get('name', 'unknown')}")
+                                log.debug(f"  🔧 {tool.get('name', 'unknown')}")
                             break
                     else:
-                        log.critical("🚨 INITIALIZE_TOOLS: No tools found after waiting - async server may need more time")
+                        log.info("No SSE tools found - async server may need more time")
                 
                 # Mark as initialized regardless of immediate tool availability
                 self._tools_initialized = True
-                log.critical("🚨 INITIALIZE_TOOLS: Config-bypass initialization complete")
+                log.info("SSE tool initialization complete")
                 
             else:
-                log.critical("🚨 INITIALIZE_TOOLS: Direct MCP connection failed")
+                log.warning("SSE MCP connection failed")
                 self._tools_initialized = True
                 self.direct_connection = None
 
         except Exception as e:
-            log.critical(f"🚨 INITIALIZE_TOOLS: Failed to initialize: {e}")
-            log.exception("Full initialization error:")
+            log.error(f"Failed to initialize SSE tools: {e}")
             self._tools_initialized = True
             self.direct_connection = None
 
@@ -300,7 +289,6 @@ class ConfigBypassSSEChukAgent(ChukAgent):
             log.warning(f"⚠️ Could not get available tools: {e}")
             return []
 
-
 def create_perplexity_agent(**kwargs):
     """
     Create a perplexity agent with complete config bypass.
@@ -309,19 +297,8 @@ def create_perplexity_agent(**kwargs):
         **kwargs: Configuration parameters passed from YAML
     """
     
-    # CRITICAL DEBUG: Always log when this function is called
-    import sys
-    import traceback
-    
-    log.critical("🚨 CRITICAL: create_perplexity_agent() CALLED!")
-    log.critical(f"🚨 CRITICAL: Called with kwargs: {kwargs}")
-    log.critical(f"🚨 CRITICAL: Called from: {traceback.extract_stack()[-2]}")
-    
-    print("🚨 PRINT: create_perplexity_agent() CALLED!", file=sys.stderr)
-    print(f"🚨 PRINT: kwargs = {kwargs}", file=sys.stderr)
-    
-    log.info("🚀 PERPLEXITY AGENT: create_perplexity_agent called")
-    log.info(f"🚀 PERPLEXITY AGENT: kwargs = {kwargs}")
+    log.debug("Creating perplexity agent...")
+    log.debug(f"Configuration: {kwargs}")
     
     # Extract session-related parameters with defaults
     enable_sessions = kwargs.get('enable_sessions', True)
@@ -341,28 +318,22 @@ def create_perplexity_agent(**kwargs):
     mcp_servers = kwargs.get('mcp_servers', ["perplexity_server"])
     tool_namespace = kwargs.get('tool_namespace', "sse")
     
-    log.critical(f"🚨 CRITICAL: enable_tools = {enable_tools}")
-    log.critical(f"🚨 CRITICAL: enable_sessions = {enable_sessions}")
-    
     # Check if MCP server configuration exists
     if enable_tools:
-        log.critical("🚨 CRITICAL: Checking MCP server configuration...")
         servers = get_mcp_servers_from_env()
         if not servers:
-            log.critical("🚨 CRITICAL: No MCP server configuration found - disabling tools")
+            log.info("No SSE MCP server configuration found - creating fallback agent")
             enable_tools = False
         else:
-            log.critical(f"🚨 CRITICAL: Found MCP server configuration: {servers}")
+            log.debug(f"Found SSE server configuration: {servers}")
     
-    log.critical(f"🚨 CRITICAL: Creating config-bypass perplexity agent")
-    log.critical(f"🚨 CRITICAL: Sessions: {enable_sessions}, Tools: {enable_tools}")
+    log.info(f"Creating perplexity agent (tools: {enable_tools}, sessions: {enable_sessions})")
     
     try:
         if enable_tools:
-            log.critical("🚨 CRITICAL: Creating with MCP tools enabled...")
             # Create config-bypass SSE agent
             try:
-                # Filter out parameters we're setting explicitly to avoid duplicate kwargs
+                # Filter out parameters we're setting explicitly
                 filtered_kwargs = {k: v for k, v in kwargs.items() if k not in [
                     'enable_sessions', 'enable_tools', 'debug_tools',
                     'infinite_context', 'token_threshold', 'max_turns_per_segment',
@@ -388,18 +359,14 @@ def create_perplexity_agent(**kwargs):
                     tool_namespace=tool_namespace,
                     **filtered_kwargs
                 )
-                log.critical("🚨 CRITICAL: Created config-bypass perplexity agent with direct MCP connection")
+                log.info("Created SSE perplexity agent with direct MCP connection")
                 
             except Exception as sse_error:
-                log.critical(f"🚨 CRITICAL: Config-bypass agent creation failed: {sse_error}")
-                log.exception("SSE agent creation error:")
+                log.warning(f"SSE agent creation failed: {sse_error}")
                 enable_tools = False
         
         if not enable_tools:
-            log.critical("🚨 CRITICAL: Creating fallback agent without tools...")
             # Create fallback ChukAgent
-            
-            # Filter out parameters for fallback agent too
             fallback_filtered_kwargs = {k: v for k, v in kwargs.items() if k not in [
                 'enable_sessions', 'enable_tools', 'provider', 'model', 'streaming',
                 'name', 'description', 'instruction', 'infinite_context', 
@@ -410,7 +377,7 @@ def create_perplexity_agent(**kwargs):
                 name="perplexity_agent",
                 provider=provider,
                 model=model,
-                description="Research assistant (MCP tools unavailable)",
+                description="Research assistant (SSE MCP tools unavailable)",
                 instruction="I'm a research assistant.",
                 streaming=streaming,
                 enable_sessions=enable_sessions,
@@ -421,18 +388,13 @@ def create_perplexity_agent(**kwargs):
                 enable_tools=False,
                 **fallback_filtered_kwargs
             )
-            log.critical("🚨 CRITICAL: Created fallback perplexity agent without MCP tools")
+            log.info("Created fallback perplexity agent without SSE MCP tools")
         
-        # Debug logging
-        log.critical(f"🚨 CRITICAL: PERPLEXITY AGENT CREATED: {type(agent).__name__}")
-        log.critical(f"🚨 CRITICAL: Internal sessions enabled: {agent.enable_sessions}")
-        log.critical(f"🚨 CRITICAL: Tools enabled: {getattr(agent, 'enable_tools', False)}")
-        
+        log.info(f"Perplexity agent created: {type(agent).__name__}")
         return agent
         
     except Exception as e:
-        log.critical(f"🚨 CRITICAL: Failed to create perplexity_agent: {e}")
-        log.exception("Full creation error:")
+        log.error(f"Failed to create perplexity_agent: {e}")
         
         # Create a minimal fallback ChukAgent
         fallback_agent = ChukAgent(
@@ -445,9 +407,8 @@ def create_perplexity_agent(**kwargs):
             enable_sessions=enable_sessions
         )
         
-        log.critical("🚨 CRITICAL: Created minimal fallback perplexity agent")
+        log.info("Created minimal fallback perplexity agent")
         return fallback_agent
-
 
 # Lazy loading to prevent duplicate creation
 _perplexity_agent_cache = None
@@ -456,28 +417,34 @@ def get_perplexity_agent():
     """Get or create a default perplexity agent instance (cached)."""
     global _perplexity_agent_cache
     if _perplexity_agent_cache is None:
-        log.info("🔍 CACHE: Creating cached perplexity agent...")
+        log.debug("Creating cached perplexity agent...")
         _perplexity_agent_cache = create_perplexity_agent(enable_tools=True)
-        log.info("✅ Cached config-bypass perplexity_agent created")
+        log.info("✅ Cached perplexity_agent created")
     else:
-        log.info("🔍 CACHE: Using existing cached perplexity agent")
+        log.debug("Using existing cached perplexity agent")
     return _perplexity_agent_cache
 
 # For direct import compatibility
 try:
-    log.info("🔍 MODULE LOAD: Creating module-level perplexity_agent...")
-    log.info(f"🔍 MODULE LOAD: About to call get_perplexity_agent()")
+    log.debug("Creating module-level perplexity_agent...")
     perplexity_agent = get_perplexity_agent()
-    log.info(f"🔍 MODULE LOAD: Perplexity agent created: {type(perplexity_agent)}")
-    log.info(f"🔍 MODULE LOAD: Agent tools enabled: {getattr(perplexity_agent, 'enable_tools', 'unknown')}")
+    log.debug(f"Perplexity agent created: {type(perplexity_agent)}")
+    log.debug(f"Agent tools enabled: {getattr(perplexity_agent, 'enable_tools', 'unknown')}")
 except Exception as e:
     log.error(f"❌ Failed to create module-level perplexity_agent: {e}")
     log.exception("Module level creation error:")
-    perplexity_agent = None
+    # Create a minimal fallback to ensure the import works
+    perplexity_agent = ChukAgent(
+        name="perplexity_agent",
+        provider="openai", 
+        model="gpt-4o",
+        description="Basic research assistant (fallback)",
+        instruction="I'm a research assistant.",
+        enable_tools=False
+    )
+    log.info("Created emergency fallback perplexity agent")
 
-log.info("🔥 PERPLEXITY_AGENT MODULE: Module import complete!")
-log.info(f"🔥 PERPLEXITY_AGENT MODULE: perplexity_agent = {perplexity_agent}")
-
+log.debug("Perplexity agent module loading complete")
 
 # Export everything for flexibility
 __all__ = ['create_perplexity_agent', 'get_perplexity_agent', 'ConfigBypassSSEChukAgent', 'perplexity_agent']

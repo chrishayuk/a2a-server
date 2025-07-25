@@ -1,3 +1,4 @@
+# a2a_server/transport/ws.py
 from __future__ import annotations
 """WebSocket transport ― back-pressure safe (May 2025)
 

@@ -1,6 +1,6 @@
 # a2a_server/tasks/handlers/chuk/chuk_agent.py
 """
-Pure ChukAgent class with comprehensive tool call debugging.
+Pure ChukAgent class with cleaned up logging levels.
 """
 import asyncio
 import json
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 class ChukAgent:
     """
-    Pure ChukAgent with comprehensive tool call debugging.
+    Pure ChukAgent with cleaned up logging levels for better readability.
     """
     
     def __init__(
@@ -112,7 +112,7 @@ class ChukAgent:
         else:
             self._ai_sessions = {}
         
-        logger.info(f"🚀 Initialized ChukAgent '{name}' with {mcp_transport} MCP transport and debugging enabled")
+        logger.debug(f"🚀 Initialized ChukAgent '{name}' with {mcp_transport} MCP transport")
 
     def _setup_internal_sessions(
         self, 
@@ -247,21 +247,22 @@ class ChukAgent:
             logger.warning(f"⚠️ Failed to track user message: {e}")
 
     async def initialize_tools(self):
-        """Initialize MCP connection and tools with comprehensive debugging."""
+        """Initialize MCP connection and tools with cleaner logging."""
         if self._tools_initialized or not self.enable_tools:
             if self.debug_tools:
                 logger.debug(f"🔧 Skipping tool initialization - already initialized: {self._tools_initialized}, tools enabled: {self.enable_tools}")
             return
         
         init_start_time = time.time()
-        logger.info(f"🔧 Starting tool initialization for {self.name}...")
+        logger.debug(f"🔧 Initializing tools for {self.name}...")
         
         try:
             if self.mcp_transport == "stdio" and self.mcp_servers and self.mcp_config_file:
                 server_names = {i: name for i, name in enumerate(self.mcp_servers)}
                 
-                logger.info(f"🔗 Setting up stdio MCP with servers: {self.mcp_servers}")
-                logger.info(f"📄 Using config file: {self.mcp_config_file}")
+                if self.debug_tools:
+                    logger.debug(f"🔗 Setting up stdio MCP with servers: {self.mcp_servers}")
+                    logger.debug(f"📄 Using config file: {self.mcp_config_file}")
                 
                 setup_start = time.time()
                 _, self.stream_manager = await setup_mcp_stdio(
@@ -271,12 +272,15 @@ class ChukAgent:
                     namespace=self.tool_namespace,
                 )
                 setup_time = time.time() - setup_start
-                logger.info(f"⏱️ MCP stdio setup took {setup_time:.2f}s")
+                
+                if self.debug_tools:
+                    logger.debug(f"⏱️ MCP stdio setup took {setup_time:.2f}s")
                 
             elif self.mcp_transport == "sse" and self.mcp_sse_servers:
                 server_names = {i: server["name"] for i, server in enumerate(self.mcp_sse_servers)}
                 
-                logger.info(f"🔗 Setting up SSE MCP with servers: {[s['name'] for s in self.mcp_sse_servers]}")
+                if self.debug_tools:
+                    logger.debug(f"🔗 Setting up SSE MCP with servers: {[s['name'] for s in self.mcp_sse_servers]}")
                 
                 setup_start = time.time()
                 _, self.stream_manager = await setup_mcp_sse(
@@ -285,21 +289,22 @@ class ChukAgent:
                     namespace=self.tool_namespace,
                 )
                 setup_time = time.time() - setup_start
-                logger.info(f"⏱️ MCP SSE setup took {setup_time:.2f}s")
-            
-            # Debug stream manager
-            if self.stream_manager:
-                logger.info(f"✅ Stream manager created: {type(self.stream_manager)}")
-                if hasattr(self.stream_manager, 'server_names'):
-                    logger.info(f"🔧 Server names: {self.stream_manager.server_names}")
                 
-                # Get registry
+                if self.debug_tools:
+                    logger.debug(f"⏱️ MCP SSE setup took {setup_time:.2f}s")
+            
+            # Stream manager setup
+            if self.stream_manager:
+                if self.debug_tools:
+                    logger.debug(f"✅ Stream manager created: {type(self.stream_manager)}")
+                    if hasattr(self.stream_manager, 'server_names'):
+                        logger.debug(f"🔧 Server names: {self.stream_manager.server_names}")
+                
+                # Get registry and executor (move timing to debug)
                 registry_start = time.time()
                 self.registry = await ToolRegistryProvider.get_registry()
                 registry_time = time.time() - registry_start
-                logger.info(f"⏱️ Tool registry creation took {registry_time:.2f}s")
                 
-                # Create executor
                 executor_start = time.time()
                 strategy = InProcessStrategy(
                     self.registry,
@@ -308,32 +313,46 @@ class ChukAgent:
                 )
                 self.executor = ToolExecutor(self.registry, strategy=strategy)
                 executor_time = time.time() - executor_start
-                logger.info(f"⏱️ Tool executor creation took {executor_time:.2f}s")
+                
+                if self.debug_tools:
+                    logger.debug(f"⏱️ Tool registry creation took {registry_time:.2f}s")
+                    logger.debug(f"⏱️ Tool executor creation took {executor_time:.2f}s")
                 
                 # Test tools availability
                 try:
                     test_start = time.time()
                     available_tools = await self.get_available_tools()
                     test_time = time.time() - test_start
-                    logger.info(f"✅ Found {len(available_tools)} available tools in {test_time:.2f}s: {available_tools}")
+                    
+                    # Keep tool info at INFO level but clean it up
+                    logger.debug(f"✅ Found {len(available_tools)} available tools: {available_tools}")
+                    
+                    if self.debug_tools:
+                        logger.debug(f"⏱️ Tool discovery took {test_time:.2f}s")
+                    
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to list available tools: {e}")
                 
-                # Test tool schema generation
+                # Test tool schema generation (move details to debug)
                 try:
                     schema_start = time.time()
                     tool_schemas = await self.generate_tools_schema()
                     schema_time = time.time() - schema_start
-                    logger.info(f"✅ Generated {len(tool_schemas)} tool schemas in {schema_time:.2f}s")
                     
-                    if self.debug_tools and tool_schemas:
-                        for i, schema in enumerate(tool_schemas[:3]):  # Show first 3
-                            tool_name = schema.get('function', {}).get('name', 'unknown')
-                            logger.debug(f"🔧 Tool schema {i+1}: {tool_name}")
+                    if tool_schemas:
+                        logger.debug(f"✅ Generated {len(tool_schemas)} tool schemas")
+                    
+                    if self.debug_tools:
+                        logger.debug(f"⏱️ Tool schema generation took {schema_time:.2f}s")
+                        if tool_schemas:
+                            for i, schema in enumerate(tool_schemas[:3]):  # Show first 3
+                                tool_name = schema.get('function', {}).get('name', 'unknown')
+                                logger.debug(f"🔧 Tool schema {i+1}: {tool_name}")
+                    
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to generate tool schemas: {e}")
                 
-                logger.info(f"✅ MCP initialized successfully with namespace '{self.tool_namespace}'")
+                logger.debug(f"✅ MCP initialized successfully")
             else:
                 logger.warning("❌ No stream manager created - tools will not be available")
             
@@ -341,7 +360,7 @@ class ChukAgent:
             self._last_tool_init_time = time.time()
             
             total_time = time.time() - init_start_time
-            logger.info(f"🎉 Tool initialization completed in {total_time:.2f}s")
+            logger.debug(f"🎉 Tool initialization completed in {total_time:.2f}s")
             
         except Exception as e:
             logger.error(f"❌ Failed to initialize MCP: {e}")
@@ -374,7 +393,7 @@ class ChukAgent:
             return []
 
     async def execute_tools(self, tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Execute tool calls with comprehensive debugging."""
+        """Execute tool calls with cleaner logging."""
         if not self.executor or not self.enable_tools:
             error_msg = "Tool executor not available"
             logger.error(f"❌ {error_msg}")
@@ -383,21 +402,24 @@ class ChukAgent:
         self._tool_call_count += 1
         is_first_call = self._tool_call_count == 1
         
-        logger.info(f"🔧 TOOL EXECUTION #{self._tool_call_count} (first call: {is_first_call})")
-        logger.info(f"🔧 Executing {len(tool_calls)} tool calls")
+        # Keep high-level info, move details to debug
+        logger.debug(f"🔧 Executing {len(tool_calls)} tool calls")
         
         if self.debug_tools:
+            logger.debug(f"🔧 TOOL EXECUTION #{self._tool_call_count} (first call: {is_first_call})")
             logger.debug(f"🔧 Tool timeout: {self.tool_timeout}s")
             logger.debug(f"🔧 Max concurrency: {self.max_concurrency}")
             logger.debug(f"🔧 Time since tool init: {time.time() - self._last_tool_init_time:.2f}s" if self._last_tool_init_time else "Never")
         
-        # Convert to ToolCall objects with debugging
+        # Convert to ToolCall objects
         calls = []
         for i, tc in enumerate(tool_calls):
             func = tc.get("function", {})
             tool_name = func.get("name", "")
             
-            logger.info(f"🔧 Tool call {i+1}: {tool_name}")
+            # Move detailed tool call info to debug
+            if self.debug_tools:
+                logger.debug(f"🔧 Tool call {i+1}: {tool_name}")
             
             # Remove namespace prefix if present
             if tool_name.startswith(f"{self.tool_namespace}."):
@@ -424,11 +446,13 @@ class ChukAgent:
                 arguments=args
             ))
             
-            logger.info(f"🔧 Created ToolCall: {full_tool_name} with args: {args}")
+            if self.debug_tools:
+                logger.debug(f"🔧 Created ToolCall: {full_tool_name} with args: {args}")
         
-        # Execute tools with detailed timing
+        # Execute tools with timing
         execution_start = time.time()
-        logger.info(f"⏱️ Starting tool execution at {execution_start}")
+        if self.debug_tools:
+            logger.debug(f"⏱️ Starting tool execution at {execution_start}")
         
         try:
             # Add timeout wrapper for debugging
@@ -440,14 +464,16 @@ class ChukAgent:
                     logger.exception("Tool execution error:")
                     raise
             
-            # Execute with timeout and detailed logging
+            # Execute with timeout and timing
             try:
                 results = await asyncio.wait_for(
                     execute_with_timeout(),
                     timeout=self.tool_timeout + 5  # Add 5s buffer
                 )
                 execution_time = time.time() - execution_start
-                logger.info(f"✅ Tool execution completed in {execution_time:.2f}s")
+                
+                # Keep summary info logging, move details to debug
+                logger.debug(f"✅ Tool execution completed in {execution_time:.2f}s")
                 
             except asyncio.TimeoutError:
                 execution_time = time.time() - execution_start
@@ -460,13 +486,15 @@ class ChukAgent:
                     "content": f"Error: Timeout after {self.tool_timeout}s"
                 } for tc in tool_calls]
             
-            # Format results with debugging
+            # Format results with appropriate logging levels
             formatted_results = []
+            successful_count = 0
+            
             for i, (tc, result) in enumerate(zip(tool_calls, results)):
                 tool_name = tc.get("function", {}).get("name", "unknown")
                 
                 if result.error:
-                    logger.error(f"❌ Tool {tool_name} failed: {result.error}")
+                    logger.warning(f"⚠️ Tool {tool_name} failed: {result.error}")
                     formatted_results.append({
                         "tool_call_id": tc.get("id"),
                         "content": f"Error: {result.error}"
@@ -479,8 +507,11 @@ class ChukAgent:
                         content = "No result"
                     
                     content_str = str(content)
-                    logger.info(f"✅ Tool {tool_name} succeeded: {len(content_str)} chars")
+                    successful_count += 1
+                    
+                    # Move detailed success info to debug
                     if self.debug_tools:
+                        logger.debug(f"✅ Tool {tool_name} succeeded: {len(content_str)} chars")
                         logger.debug(f"🔧 Tool {tool_name} result preview: {content_str[:200]}...")
                     
                     formatted_results.append({
@@ -488,7 +519,8 @@ class ChukAgent:
                         "content": content_str
                     })
             
-            logger.info(f"🎉 Tool execution summary: {len(formatted_results)} results, {sum(1 for r in formatted_results if not r['content'].startswith('Error:'))} successful")
+            # Keep high-level summary at info level
+            logger.debug(f"🎉 Tool execution: {successful_count}/{len(formatted_results)} successful")
             return formatted_results
             
         except Exception as e:
@@ -499,13 +531,16 @@ class ChukAgent:
             return [{"error": error_msg} for _ in tool_calls]
 
     async def generate_tools_schema(self) -> List[Dict[str, Any]]:
-        """Generate OpenAI-style tool schema with debugging."""
+        """Generate OpenAI-style tool schema with cleaner logging."""
         if not self.stream_manager or not self.enable_tools:
             if self.debug_tools:
                 logger.debug(f"🔍 No schema generation - stream manager: {self.stream_manager is not None}, tools enabled: {self.enable_tools}")
             return []
         
-        logger.info(f"🔧 Generating tool schemas...")
+        # Move detailed schema generation to debug
+        if self.debug_tools:
+            logger.debug(f"🔧 Generating tool schemas...")
+        
         tools = []
         
         try:
@@ -518,7 +553,8 @@ class ChukAgent:
                 all_tools = self.stream_manager.get_all_tools()
                 get_time = time.time() - start_time
                 
-                logger.info(f"🔧 get_all_tools() returned {len(all_tools)} tools in {get_time:.2f}s")
+                if self.debug_tools:
+                    logger.debug(f"🔧 get_all_tools() returned {len(all_tools)} tools in {get_time:.2f}s")
                 
                 for i, tool_info in enumerate(all_tools):
                     tool_name = tool_info.get('name', '')
@@ -538,18 +574,22 @@ class ChukAgent:
                             }
                         }
                         tools.append(openai_tool)
-                        logger.info(f"✅ Added tool schema for {tool_name}")
+                        if self.debug_tools:
+                            logger.debug(f"✅ Added tool schema for {tool_name}")
                 
                 if tools:
-                    logger.info(f"✅ Generated {len(tools)} tool schemas via get_all_tools()")
+                    # Keep high-level info
+                    logger.debug(f"✅ Generated {len(tools)} tool schemas")
                     return tools
                     
             except Exception as e:
-                logger.warning(f"⚠️ get_all_tools() failed: {e}")
+                if self.debug_tools:
+                    logger.debug(f"⚠️ get_all_tools() failed: {e}")
             
             # Method 2: Fallback to list_tools() with server names
             server_names = getattr(self.stream_manager, 'server_names', {})
-            logger.info(f"🔧 Fallback: trying list_tools() with server names: {server_names}")
+            if self.debug_tools:
+                logger.debug(f"🔧 Fallback: trying list_tools() with server names: {server_names}")
             
             for server_id, server_name in server_names.items():
                 try:
@@ -560,7 +600,8 @@ class ChukAgent:
                     server_tools = await self.stream_manager.list_tools(server_name)
                     list_time = time.time() - start_time
                     
-                    logger.info(f"🔧 list_tools({server_name}) returned {len(server_tools)} tools in {list_time:.2f}s")
+                    if self.debug_tools:
+                        logger.debug(f"🔧 list_tools({server_name}) returned {len(server_tools)} tools in {list_time:.2f}s")
                     
                     for tool_info in server_tools:
                         tool_name = tool_info.get('name', '')
@@ -577,13 +618,14 @@ class ChukAgent:
                                 }
                             }
                             tools.append(openai_tool)
-                            logger.info(f"✅ Added tool schema for {tool_name}")
+                            if self.debug_tools:
+                                logger.debug(f"✅ Added tool schema for {tool_name}")
                 
                 except Exception as e:
                     logger.error(f"❌ list_tools({server_name}) failed: {e}")
             
             if tools:
-                logger.info(f"✅ Generated {len(tools)} tool schemas via list_tools()")
+                logger.debug(f"✅ Generated {len(tools)} tool schemas")
                 return tools
             else:
                 logger.warning("⚠️ No tools generated from stream manager")
@@ -601,7 +643,7 @@ class ChukAgent:
         session_id: Optional[str] = None,
         **llm_kwargs
     ) -> Dict[str, Any]:
-        """Complete a conversation with detailed debugging."""
+        """Complete a conversation with cleaner logging."""
         if self.debug_tools:
             logger.debug(f"🔧 Starting completion - use_tools: {use_tools}, session_id: {session_id}")
         
@@ -637,7 +679,8 @@ class ChukAgent:
             schema_time = time.time() - schema_start
             
             if tools:
-                logger.info(f"🔧 Using {len(tools)} tools (schema generation: {schema_time:.2f}s)")
+                if self.debug_tools:
+                    logger.debug(f"🔧 Using {len(tools)} tools (schema generation: {schema_time:.2f}s)")
             else:
                 logger.warning("⚠️ No tools available, proceeding without tools")
                 use_tools = False
@@ -663,9 +706,11 @@ class ChukAgent:
                     **llm_kwargs
                 )
                 llm_time = time.time() - llm_start
-                logger.info(f"⏱️ LLM completion took {llm_time:.2f}s")
                 
-                # Handle tool calls with debugging
+                if self.debug_tools:
+                    logger.debug(f"⏱️ LLM completion took {llm_time:.2f}s")
+                
+                # Handle tool calls
                 tool_calls = None
                 content = None
                 
@@ -677,9 +722,10 @@ class ChukAgent:
                     content = getattr(response, 'content', None)
                 
                 if tool_calls:
-                    logger.info(f"🔧 LLM requested {len(tool_calls)} tool calls")
+                    if self.debug_tools:
+                        logger.debug(f"🔧 LLM requested {len(tool_calls)} tool calls")
                     
-                    # Execute tools with comprehensive debugging
+                    # Execute tools
                     tool_results = await self.execute_tools(tool_calls)
                     
                     # Add tool results to conversation and get final response
@@ -702,7 +748,9 @@ class ChukAgent:
                     final_start = time.time()
                     final_response = await llm_client.create_completion(messages=enhanced_messages, **llm_kwargs)
                     final_time = time.time() - final_start
-                    logger.info(f"⏱️ Final LLM completion took {final_time:.2f}s")
+                    
+                    if self.debug_tools:
+                        logger.debug(f"⏱️ Final LLM completion took {final_time:.2f}s")
                     
                     final_content = self._extract_response_content(final_response)
                     
@@ -715,7 +763,8 @@ class ChukAgent:
                         "usage": getattr(final_response, 'usage', None) if hasattr(final_response, 'usage') else response.get('usage')
                     }
                 else:
-                    logger.info("🔧 No tool calls requested by LLM")
+                    if self.debug_tools:
+                        logger.debug("🔧 No tool calls requested by LLM")
                     final_content = content or self._extract_response_content(response)
                     
                     await self._safe_track_ai_response(ai_session, final_content, self.model, self.provider)
@@ -728,7 +777,7 @@ class ChukAgent:
                     }
             else:
                 # No tools, simple completion
-                logger.info("🔧 Proceeding with simple completion (no tools)")
+                logger.debug("🔧 Proceeding with simple completion (no tools)")
                 response = await llm_client.create_completion(messages=messages, **llm_kwargs)
                 final_content = self._extract_response_content(response)
                 
@@ -784,7 +833,7 @@ class ChukAgent:
         if self.stream_manager:
             try:
                 await self.stream_manager.close()
-                logger.info(f"🔌 Closed MCP stream manager for {self.name}")
+                logger.debug(f"🔌 Closed MCP stream manager for {self.name}")
             except Exception as e:
                 logger.warning(f"⚠️ Error closing stream manager: {e}")
 
