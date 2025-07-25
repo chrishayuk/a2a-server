@@ -65,8 +65,8 @@ def _masked_config(cfg: Optional[Dict[str, Dict[str, Any]]]) -> Dict[str, Dict[s
         return {}
 
     SENSITIVE = {"api_key", "token", "access_key", "secret", "password"}
-
     redacted: Dict[str, Dict[str, Any]] = {}
+    
     for handler, params in cfg.items():
         if isinstance(params, dict):
             redacted[handler] = {
@@ -74,10 +74,7 @@ def _masked_config(cfg: Optional[Dict[str, Dict[str, Any]]]) -> Dict[str, Dict[s
                 for k, v in params.items()
             }
         else:
-            if handler.lower() in SENSITIVE:
-                redacted[handler] = "***"
-            else:
-                redacted[handler] = params
+            redacted[handler] = "***" if handler.lower() in SENSITIVE else params
     return redacted
 
 
