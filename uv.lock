@@ -21,7 +21,7 @@ wheels = [
 
 [[package]]
 name = "a2a-server"
-version = "0.5.6"
+version = "0.5.7"
 source = { editable = "." }
 dependencies = [
     { name = "a2a-json-rpc" },

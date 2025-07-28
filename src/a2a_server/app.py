@@ -32,7 +32,7 @@ from a2a_server.tasks.handlers.task_handler import TaskHandler
 from a2a_server.tasks.task_manager import TaskManager
 from a2a_json_rpc.protocol import JSONRPCProtocol
 from a2a_server.methods import register_methods
-from a2a_server.agent_card import get_agent_cards
+from a2a_server.agent_card import get_agent_cards, get_default_agent_card
 
 # extra route modules
 from a2a_server.routes import debug as _debug_routes
@@ -173,7 +173,7 @@ def create_app(
     docs_url: Optional[str] = None,
     redoc_url: Optional[str] = None,
     openapi_url: Optional[str] = None,
-    config: Optional[Dict[str, Any]] = None,  # Add full config support
+    config: Optional[Dict[str, Any]] = None,
 ) -> FastAPI:
     """Return a fully-wired FastAPI instance for the A2A server with optimizations."""
 
@@ -285,8 +285,9 @@ def create_app(
     app.state.task_manager = task_manager
     app.state.session_store = session_store
     app.state.server_config = config or {}
+    app.state.protocol = protocol  # Make protocol available to routes
 
-    # ── Transports ─────────────────────────────────────────────────────
+    # ── Global transports ──────────────────────────────────────────────
     logger.info("Setting up optimized transport layers")
     setup_http(app, protocol, task_manager, event_bus)
     setup_ws(app, protocol, event_bus, task_manager)
@@ -311,15 +312,30 @@ def create_app(
         if task_ids:
             return await _create_sse_response(app.state.event_bus, task_ids)
         
+        base_url = str(request.base_url).rstrip("/")
+        
         # Show auth status
         auth_status = {
             "admin_token": "enabled" if _ADMIN_TOKEN else "disabled",
             "global_auth": "enabled" if global_bearer_token else "disabled"
         }
         
+        # List available handlers with their URLs (using .well-known format)
+        available_handlers = {}
+        for handler_name in task_manager.get_handlers().keys():
+            handler_url = f"{base_url}/{handler_name}"
+            available_handlers[handler_name] = {
+                "url": handler_url,
+                "agent_card": f"{handler_url}/.well-known/agent.json",  # ✅ Correct format
+                "rpc": f"{handler_url}/rpc",
+                "events": f"{handler_url}/events",
+                "ws": f"{handler_url}/ws"
+            }
+        
         return {
             "service": "A2A Server",
             "version": "1.0.0-optimized",
+            "base_url": base_url,
             "authentication": auth_status,
             "endpoints": {
                 "rpc": "/rpc",
@@ -329,7 +345,7 @@ def create_app(
                 "metrics": "/metrics" + (" (admin auth)" if _ADMIN_TOKEN else ""),
                 "admin": "/admin/*" + (" (admin auth)" if _ADMIN_TOKEN else ""),
             },
-            "handlers": list(task_manager.get_handlers().keys()),
+            "handlers": available_handlers,
             "default_handler": task_manager.get_default_handler(),
             "optimizations": "enabled"
         }
@@ -338,14 +354,30 @@ def create_app(
     async def root_events(request: Request, task_ids: Optional[List[str]] = Query(None)):
         return await _create_sse_response(app.state.event_bus, task_ids)
 
+    # ── Enhanced agent card endpoints ──────────────────────────────────
     @app.get("/agent-card.json", include_in_schema=False)
     async def root_agent_card(request: Request):
-        base = str(request.base_url).rstrip("/")
-        cards = get_agent_cards(handlers_config or {}, base)
-        default = next(iter(cards.values()), None)
-        if default:
-            return default.model_dump(exclude_none=True)
-        raise HTTPException(status_code=404, detail="No agent card available")
+        """Root agent card - returns default handler's card."""
+        base_url = str(request.base_url).rstrip("/")
+        cards = get_agent_cards(handlers_config or {}, base_url)
+        
+        # Get default handler card or first available
+        default_handler = handlers_config.get("default_handler") if handlers_config else None
+        if default_handler and default_handler in cards:
+            default_card = cards[default_handler]
+        elif cards:
+            default_card = next(iter(cards.values()))
+        else:
+            raise HTTPException(status_code=404, detail="No agent card available")
+        
+        card_dict = default_card.model_dump(exclude_none=True)
+        logger.info(f"Serving default agent card: {card_dict.get('name')} at {card_dict.get('url')}")
+        return card_dict
+
+    @app.get("/.well-known/agent.json", include_in_schema=False)
+    async def well_known_agent_card(request: Request):
+        """Well-known agent discovery endpoint."""
+        return await root_agent_card(request)
 
     # ── Admin routes (protected) ───────────────────────────────────────
     @app.get("/admin/stats", include_in_schema=False)
@@ -470,6 +502,9 @@ def create_app(
         _debug_routes.register_debug_routes(app, event_bus, task_manager)
 
     _health_routes.register_health_routes(app, task_manager, handlers_config)
+    
+    # ✅ Let routes/handlers.py handle ALL handler-specific routes
+    # This includes /.well-known/agent.json endpoints
     _handler_routes.register_handler_routes(app, task_manager, handlers_config)
 
     # ── Startup and shutdown events ────────────────────────────────────
