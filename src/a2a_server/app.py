@@ -410,9 +410,16 @@ def create_app(
         # Add tool cache stats if available
         try:
             from a2a_server.tasks.handlers.chuk.chuk_agent import _tool_cache
-            stats["tool_cache"] = _tool_cache.get_stats()
+            if hasattr(_tool_cache, 'get_stats'):
+                stats["tool_cache"] = _tool_cache.get_stats()
+            else:
+                stats["tool_cache"] = {"available": True, "get_stats": False}
         except ImportError:
-            stats["tool_cache"] = {"available": False}
+            stats["tool_cache"] = {"available": False, "reason": "module_not_found"}
+        except AttributeError:
+            stats["tool_cache"] = {"available": False, "reason": "_tool_cache_not_found"}
+        except Exception as e:
+            stats["tool_cache"] = {"available": False, "error": str(e)}
         
         return stats
 
@@ -496,6 +503,28 @@ def create_app(
             "timestamp": time.time()
         }
 
+    # ── CLI compatibility routes for localhost bug ────────────────
+    # The CLI has a bug where it switches to localhost:8000 for handler connections
+    # These routes help redirect back to the correct server
+    @app.get("/cli-fix/{handler_name:path}", include_in_schema=False)
+    async def cli_localhost_fix(handler_name: str, request: Request):
+        """Fix CLI localhost regression by redirecting to correct server."""
+        # Determine correct base URL
+        base_url = str(request.base_url).rstrip("/")
+        if "localhost" in base_url or "127.0.0.1" in base_url:
+            # If running locally, keep localhost
+            correct_url = f"{base_url}/{handler_name}"
+        else:
+            # Production - use the fly.dev URL
+            correct_url = f"https://a2a-server.fly.dev/{handler_name}"
+        
+        return {
+            "error": "CLI_REDIRECT",
+            "message": f"CLI bug detected - use correct URL: {correct_url}",
+            "correct_url": correct_url,
+            "handler": handler_name
+        }
+
     # ── Extra route modules ────────────────────────────────────────────
     DEBUG_A2A = os.getenv("DEBUG_A2A", "0") == "1"
     if DEBUG_A2A:
@@ -541,11 +570,18 @@ def create_app(
         except Exception as e:
             logger.error(f"❌ Discovery cleanup error: {e}")
         
-        # Clean up tool cache
+        # Clean up tool cache if available
         try:
             from a2a_server.tasks.handlers.chuk.chuk_agent import _tool_cache
-            await _tool_cache.clear()
-            logger.info("✅ Tool cache cleanup complete")
+            if hasattr(_tool_cache, 'clear'):
+                await _tool_cache.clear()
+                logger.info("✅ Tool cache cleanup complete")
+            else:
+                logger.debug("Tool cache does not have clear method")
+        except ImportError:
+            logger.debug("Tool cache not available (no _tool_cache found)")
+        except AttributeError as e:
+            logger.debug(f"Tool cache attribute error: {e}")
         except Exception as e:
             logger.error(f"❌ Tool cache cleanup error: {e}")
         
