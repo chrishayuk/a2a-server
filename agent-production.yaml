@@ -50,7 +50,7 @@ logging:
     "a2a_server.session_store_factory": "WARNING"
     "a2a_server.tasks.handlers.session_aware_task_handler": "WARNING"
     "a2a_server.tasks.handlers.chuk": "WARNING"
-    "a2a_server.tasks.handlers.chuk.chuk_agent": "WARNING"
+    "a2a_server.tasks.handlers.chuk.chuk_agent": "INFO"
     "a2a_server.tasks.handlers.chuk.chuk_agent_handler": "WARNING"
     "a2a_server.tasks.discovery": "WARNING"
 

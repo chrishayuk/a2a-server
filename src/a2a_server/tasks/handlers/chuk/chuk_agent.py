@@ -643,7 +643,7 @@ class ChukAgent:
         session_id: Optional[str] = None,
         **llm_kwargs
     ) -> Dict[str, Any]:
-        """Complete a conversation with cleaner logging."""
+        """Complete a conversation with minimal key logging."""
         if self.debug_tools:
             logger.debug(f"🔧 Starting completion - use_tools: {use_tools}, session_id: {session_id}")
         
@@ -722,8 +722,13 @@ class ChukAgent:
                     content = getattr(response, 'content', None)
                 
                 if tool_calls:
+                    # ✅ KEY INFO LOG: Tool usage
+                    logger.info(f"🔧 {self.name} using {len(tool_calls)} tools")
+                    
                     if self.debug_tools:
-                        logger.debug(f"🔧 LLM requested {len(tool_calls)} tool calls")
+                        for i, tc in enumerate(tool_calls):
+                            tool_name = tc.get("function", {}).get("name", "unknown")
+                            logger.debug(f"🔧 Tool call {i+1}: {tool_name}")
                     
                     # Execute tools
                     tool_results = await self.execute_tools(tool_calls)
@@ -756,6 +761,9 @@ class ChukAgent:
                     
                     await self._safe_track_ai_response(ai_session, final_content, self.model, self.provider)
                     
+                    # ✅ KEY INFO LOG: Completion success
+                    logger.info(f"✅ {self.name} completed with tools")
+                    
                     return {
                         "content": final_content,
                         "tool_calls": tool_calls,
@@ -769,6 +777,9 @@ class ChukAgent:
                     
                     await self._safe_track_ai_response(ai_session, final_content, self.model, self.provider)
                     
+                    # ✅ KEY INFO LOG: Completion success (no tools)
+                    logger.info(f"✅ {self.name} completed without tools")
+                    
                     return {
                         "content": final_content,
                         "tool_calls": [],
@@ -777,11 +788,16 @@ class ChukAgent:
                     }
             else:
                 # No tools, simple completion
-                logger.debug("🔧 Proceeding with simple completion (no tools)")
+                if self.debug_tools:
+                    logger.debug("🔧 Proceeding with simple completion (no tools)")
+                    
                 response = await llm_client.create_completion(messages=messages, **llm_kwargs)
                 final_content = self._extract_response_content(response)
                 
                 await self._safe_track_ai_response(ai_session, final_content, self.model, self.provider)
+                
+                # ✅ KEY INFO LOG: Simple completion success
+                logger.info(f"✅ {self.name} completed (no tools available)")
                 
                 return {
                     "content": final_content,
