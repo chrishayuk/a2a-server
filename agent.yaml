@@ -98,9 +98,7 @@ handlers:
         pushNotifications: false
         tools: false
         sessions: true
-      authentication:
-        schemes:
-          - "None"
+      # authentication
       defaultInputModes:
         - "text/plain"
       defaultOutputModes:
@@ -163,9 +161,7 @@ handlers:
         pushNotifications: false
         tools: false
         sessions: true
-      authentication:
-        schemes:
-          - "None"
+      # authentication
       defaultInputModes:
         - "text/plain"
       defaultOutputModes:
@@ -253,9 +249,7 @@ handlers:
         pushNotifications: false
         tools: false  # Will enable MCP tools when available
         sessions: false
-      authentication:
-        schemes:
-          - "None"
+      # authentication
       defaultInputModes:
         - "text/plain"
       defaultOutputModes:
@@ -292,9 +286,7 @@ handlers:
       capabilities:
         streaming: true
         pushNotifications: false
-      authentication:
-        schemes:
-          - "None"
+      # authentication
       defaultInputModes:
         - "text/plain"
       defaultOutputModes:
@@ -328,9 +320,7 @@ handlers:
       capabilities:
         streaming: true
         pushNotifications: false
-      authentication:
-        schemes:
-          - "None"
+      # authentication
       defaultInputModes:
         - "text/plain"
       defaultOutputModes:
