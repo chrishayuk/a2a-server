@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "a2a-server"
-version = "0.5.8"
-description = "In-memory FSM for the A2A Protocol with Pydantic v2 models"
+version = "0.5.9"
+description = "A2A Protocol compliant agent server with latest specification support"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "a2a-json-rpc>=0.1.3",
+  "a2a-json-rpc @ file:///Users/chrism1/Code/ai/agentic/a2a/a2a-json-rpc",
   "asyncio>=3.4.3",
   "pydantic>=2.11.3",
   "fastapi>=0.115.12",
