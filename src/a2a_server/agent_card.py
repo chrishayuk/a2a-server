@@ -68,7 +68,8 @@ def _build_handler_url(base_url: str, handler_name: str, cfg: Dict[str, Any]) ->
     normalized_base = _normalize_base_url(base_url)
     
     # Check if URL is explicitly configured
-    explicit_url = cfg.get("agent_card", {}).get("url")
+    agent_card_config = cfg.get("agent_card")
+    explicit_url = agent_card_config.get("url") if agent_card_config else None
     if explicit_url:
         # If it's a relative URL, resolve against base
         if explicit_url.startswith('/'):
@@ -84,9 +85,11 @@ def _build_handler_url(base_url: str, handler_name: str, cfg: Dict[str, Any]) ->
 
 def _build_documentation_url(handler_url: str, cfg: Dict[str, Any]) -> str:
     """Build documentation URL if not explicitly provided."""
-    doc_url = cfg.get("agent_card", {}).get("documentationUrl") or cfg.get("agent_card", {}).get("documentation_url")
-    if doc_url:
-        return doc_url
+    agent_card_config = cfg.get("agent_card")
+    if agent_card_config:
+        doc_url = agent_card_config.get("documentationUrl") or agent_card_config.get("documentation_url")
+        if doc_url:
+            return doc_url
     
     # Default: handler_url/docs
     return f"{handler_url}/docs"

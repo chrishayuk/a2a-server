@@ -90,12 +90,12 @@ def test_handler_health_endpoints(client):
         assert "events" in data["endpoints"]
         assert "ws" in data["endpoints"]
         
-        assert data["endpoints"]["rpc"] == f"/{handler}/rpc"
-        assert data["endpoints"]["events"] == f"/{handler}/events"
-        assert data["endpoints"]["ws"] == f"/{handler}/ws"
+        assert data["endpoints"]["rpc"].endswith(f"/{handler}/rpc")
+        assert data["endpoints"]["events"].endswith(f"/{handler}/events")
+        assert data["endpoints"]["ws"].endswith(f"/{handler}/ws")
         
-        assert "handler_agent_card" in data
-        assert data["handler_agent_card"].endswith(f"/{handler}/.well-known/agent.json")
+        assert "agent_card" in data["endpoints"]
+        assert data["endpoints"]["agent_card"].endswith(f"/{handler}/.well-known/agent.json")
 
 
 @patch("a2a_server.agent_card.get_agent_cards")

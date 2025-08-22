@@ -1,6 +1,6 @@
 # A2A Server: Agent-to-Agent Communication Framework
 
-A lightweight, transport-agnostic framework for agent-to-agent communication based on JSON-RPC, implementing the [A2A Protocol](https://github.com/a2a-proto/a2a-protocol).
+A lightweight, transport-agnostic framework for agent-to-agent communication based on JSON-RPC, implementing the latest [A2A Protocol specification](https://a2a-protocol.org/latest/specification/).
 
 ## 🚀 Quick Start
 
